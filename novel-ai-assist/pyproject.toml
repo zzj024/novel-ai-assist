@@ -1,0 +1,19 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "slow: 慢速测试（集成测试，默认跳过）",
+]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["core", "watcher", "config", "main"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "def main():",
+]
