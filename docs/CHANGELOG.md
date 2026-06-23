@@ -1,5 +1,47 @@
 # 开发日志
 
+## 2026-06-23 — Phase 2 规划设计 + GitHub 仓库初始化
+
+### 完成
+
+- **P2-01 Phase 2 规划设计**
+  - 明确 Phase 2 范围："够支撑后续分析的结构化抽取"，不做一步到位
+  - GPT 5.5 Thinking 深度分析，确认架构方向
+
+### 关键决策
+
+| 决策 | 选定方案 | 拒绝方案 | 理由 |
+|------|---------|---------|------|
+| 输出架构 | 保留 summary + 新增 plot_flow + unresolved_questions | 只保留 summary 或全部结构化 | summary 给人看，plot_flow 给系统分析用 |
+| evidence | 所有模块加 evidence 字段 | 只放原文 hash | 矛盾检测需要可追溯原文依据 |
+| 大章节策略 | head-middle-tail 抽样（35%/30%/35%） | 中间截断 / 全量分段合并 | 中间截断丢关键转折；分段合并成本高，Phase 2 不做 |
+| status 结构 | 固定键位 physical/emotional/social/location | 自由 JSON | 防止模型乱填 |
+| 校验层 | 现在加 Pydantic model_validate | 后面再加 | LLM 输出稳定性差，校验必须前置 |
+| 解析日志 | 轻量 llm_parse_logs 表 | parse_run_id 完整归档 | 先做 debug 日志，历史归档 Phase 4 再做 |
+| status_changes | Phase 4 再做 | 现在做 | 跨章节分析时更稳 |
+| relation.change | Phase 4 再做 | 现在做 | 防止模型跨章脑补 |
+
+### Phase 2 MVP Schema（定案）
+
+```json
+{
+  "title", "summary",
+  "plot_flow": [{order, stage, description, characters, location, evidence}],
+  "characters": [{name, aliases, status:{p/e/s/l}, description, evidence}],
+  "relations": [{char_a, char_b, relation, detail, evidence}],
+  "timeline_events": [{event, story_time, narrative_order, characters, location, evidence}],
+  "foreshadowings": [{description, related_chars, evidence, confidence, confidence_label}],
+  "unresolved_questions": [{question, related_chars, evidence}],
+  "meta": {truncated, truncation_strategy, warnings}
+}
+```
+
+### 待办
+
+- Phase 2 实现：models.py → extract_prompt.py → parser.py → knowledge.py 扩展
+
+---
+
 ## 2026-06-22~23 — Phase 1 项目骨架搭建
 
 ### 完成

@@ -39,7 +39,7 @@
 ## 功能
 
 - [x] **定时扫描章节目录** —— 自动检测新增/变更文件，标记待解析
-- [ ] **LLM 章节解析** —— 提取人物、关系、时间线、伏笔（Phase 2）
+- [x] **LLM 章节解析** —— 结构化抽取（Pydantic 校验 + plot_flow + evidence, Phase 2 开发中）
 - [ ] **对话查询** —— 三层策略：正则 → SQL → LLM 兜底（Phase 3）
 - [ ] **矛盾检测** —— 规则引擎发现逻辑冲突（Phase 4）
 - [ ] **WebSocket 实时推送** —— 解析结果主动通知（Phase 3~4）
@@ -125,7 +125,7 @@ novel-ai-assist/
 | Phase | 内容 | 状态 |
 |-------|------|------|
 | **Phase 1** | 项目骨架 + SQLite + 配置 + 扫描模块 | ✅ **完成** |
-| Phase 2 | LLM 章节解析 → 数据库写入 | ⏳ 进行中 |
+| Phase 2 | LLM 章节解析 → Pydantic 校验 → 数据库写入 | ⏳ 进行中 |
 | Phase 3 | REST API + 对话查询 | 📝 待开始 |
 | Phase 4 | 矛盾检测 + WebSocket 推送 | 📝 待开始 |
 | Phase 5 | Vue 前端悬浮窗 | 📝 待开始 |
