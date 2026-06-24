@@ -4,6 +4,7 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 markers = [
     "slow: 慢速测试（集成测试，默认跳过）",
+    "integration: 真实 LLM 调用测试（需要 API Key 或本地模型）",
 ]
 addopts = "-v --tb=short"
 

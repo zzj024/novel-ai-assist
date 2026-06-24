@@ -1,5 +1,61 @@
 # 开发日志
 
+## 2026-06-24 — Phase 3 规划设计 + 全文档同步
+
+### 完成
+
+- **P3-00 Phase 3 架构设计决策（GPT 讨论 + 定案）**
+  - 路由组织：APIRouter，端点统一放 `api/routes.py`
+  - 响应格式：Pydantic 模型 + ok()/err() helper 结合
+  - 三层查询：新建 `core/query.py`，knowledge.py 只做数据访问
+  - LLM 兜底策略：精简检索式上下文，不喂全量库
+  - CORS：现在就加，通过 `Settings.cors_origins` 配置控制
+  - `/api/status` 迁入 routes.py，避免端点散落两地
+
+### 关键决策
+
+| 决策 | 结论 | 理由 |
+|------|------|------|
+| API 层结构 | `routes.py` + `schemas.py` + `responses.py` + `deps.py` | 边界清晰，每层单一职责 |
+| 落地顺序 | 读方法 → 确定性REST → 正则+SQL → LLM兜底 → WebSocket | 每步可验收 |
+| knowledge.py 定位 | 纯数据访问层，不做推理 | 避免 Phase 4 时变成一锅粥 |
+| LLM fallback 上下文 | 只放相关角色/事件/最近摘要，不放 raw_text 和配置 | 结构化记忆是核心价值 |
+
+### 文档同步
+
+- `project-foundation.md`：目录结构、API 契约、分层边界、CORS 配置全量更新
+- `phase-roadmap.md`：Phase 3 从"待规划"升级为完整实施计划（5 步落地）
+- `README.md`：项目结构图、数据流图、路线图同步更新
+- `docs/CHANGELOG.md`：本条记录
+
+### 待办
+
+- Phase 3 Step 1：KnowledgeBase 补读方法 + 测试
+- Phase 3 Step 2：搭建 api/ 基础设施（schemas/responses/deps + 迁 status）
+
+---
+
+## 2026-06-24 — Phase 2 核心实现 + 企业级五大标准同步
+
+### 完成
+
+- **P2-02 core/models.py** — 9 个 Pydantic 模型，类型安全校验
+- **P2-03 core/extract_prompt.py** — SYSTEM_PROMPT + OUTPUT_SCHEMA + build_extract_messages()
+- **P2-04 core/parser.py** — ChapterParser：四层 JSON 兜底 + 重试 + 事务写入
+- **P2-05 core/knowledge.py 扩展** — 第 6 张表 llm_parse_logs + Schema 迁移 + 事务覆盖写入
+- **企业级标准全量同步** — 大厂 Agent 五维标准写入 6 份文档
+- **测试覆盖** — parser 单元测试 3 路径 + 集成测试框架，全量 30 passed
+
+### 关键决策
+- PROMPT_VERSION 走 git 版本管理，不留注释旧代码
+- status 固定 4 键位（physical/emotional/social/location）防 LLM 自由发挥
+- 全量覆盖写入而非增量更新
+- 集成测试用 @pytest.mark.integration 标记，默认跳过
+
+### 待办
+- 实际跑通集成测试（需 DEEPSEEK_API_KEY 环境变量）
+- Phase 3：REST API + 对话查询（三层路由）
+
 ## 2026-06-23 — Phase 2 规划设计 + GitHub 仓库初始化
 
 ### 完成

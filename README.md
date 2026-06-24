@@ -72,17 +72,30 @@ open http://localhost:8000/api/status # 健康检查
 
 ```
 novel-ai-assist/
-├── main.py              # FastAPI 入口 + 生命周期
+├── main.py              # FastAPI 入口 + 生命周期 + 中间件
 ├── config.py            # 配置管理（Pydantic + JSON）
 ├── core/
-│   └── knowledge.py     # SQLite 数据库连接 + 建表
+│   ├── knowledge.py     # SQLite 数据访问层（读写）
+│   ├── query.py         # 三层查询路由（正则→SQL→LLM）
+│   ├── models.py        # Pydantic 校验模型
+│   ├── parser.py        # LLM 章节解析调度器
+│   └── extract_prompt.py# LLM Prompt 模板
+├── api/
+│   ├── routes.py        # REST 端点 + WebSocket
+│   ├── schemas.py       # 请求/响应模型
+│   ├── responses.py     # ok()/err() helper
+│   └── deps.py          # 依赖注入
 ├── watcher/
 │   └── monitor.py       # 目录扫描 + 章序号提取
 ├── tests/
 │   ├── test_config.py
 │   ├── test_knowledge.py
 │   ├── test_monitor.py
-│   └── test_main.py
+│   ├── test_main.py
+│   ├── test_extract_prompt.py
+│   ├── test_parser.py
+│   ├── test_integration_parser.py
+│   └── conftest.py
 └── requirements.txt
 ```
 
@@ -101,11 +114,21 @@ novel-ai-assist/
        ↓
 [core/parser.py] 调用 LLM 提取结构化数据
        ↓
-[core/knowledge.py] 事务性写入 SQLite（5 张核心表）
+[core/knowledge.py] 事务性写入 SQLite（6 张核心表）
        ↓
-[core/conflict.py] 矛盾检测
+[core/query.py] 对话查询（正则→SQL→LLM 兜底）
        ↓
 [api/ws.py] WebSocket 推送
+```
+
+### API 分层
+
+```
+HTTP 请求 → api/routes.py（解析参数）
+         → core/query.py（正则意图分类）
+         → core/knowledge.py（SQL 查询）
+         → api/responses.py（格式化返回）
+         → HTTP 响应
 ```
 
 ### 数据库设计
@@ -125,11 +148,12 @@ novel-ai-assist/
 | Phase | 内容 | 状态 |
 |-------|------|------|
 | **Phase 1** | 项目骨架 + SQLite + 配置 + 扫描模块 | ✅ **完成** |
-| Phase 2 | LLM 章节解析 → Pydantic 校验 → 数据库写入 | ⏳ 进行中 |
-| Phase 3 | REST API + 对话查询 | 📝 待开始 |
-| Phase 4 | 矛盾检测 + WebSocket 推送 | 📝 待开始 |
-| Phase 5 | Vue 前端悬浮窗 | 📝 待开始 |
-| Phase 6 | 集成测试 + 边界打磨 | 📝 待开始 |
+| **Phase 2** | LLM 章节解析 → Pydantic 校验 → 数据库写入 | ✅ **完成** |
+| **Phase 3** | REST API + 对话查询（APIRouter + 三层路由） | 📋 **已规划** |
+| Phase 4 | 矛盾检测 + WebSocket 推送 | ⏳ 待开始 |
+| Phase 5 | Vue 前端悬浮窗 | ⏳ 待开始 |
+| Phase 6 | 集成测试 + 边界打磨 | ⏳ 待开始 |
+| Phase 7 | 企业级补丁（面试前打磨） | ⏳ 待开始 |
 
 ---
 

@@ -1,14 +1,17 @@
-"""SQLite 数据库连接管理 + 表结构初始化
-
-KnowledgeBase 是数据库访问的入口，职责：
-- 线程安全的连接管理（threading.local）
-- 5 张核心表的幂等建表
-- WAL 模式 / 外键约束 / busy_timeout 的 PRAGMA 设置
 """
+SQLite 数据库连接管理 + 表结构初始化 + 事务写入
+KnowledgeBase 是数据库访问的入口，职责：
+    - 线程安全的连接管理（threading.local）
+    - 6 张核心表的幂等建表（含 Schema 迁移）
+    - 事务性覆盖写入（Parser 调用入口）
+"""
+
 import sqlite3
 import threading
 import logging
 from pathlib import Path
+from typing import Optional
+from core.models import ChapterExtract
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +21,46 @@ class KnowledgeBase:
 
     - __init__ 只存储路径，不打开连接（延迟初始化）
     - get_conn() 使用 threading.local() 实现线程级连接缓存
-    - init_db() 幂等创建 5 张核心表
+    - init_db() 幂等创建 6 张核心表
     """
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.local = threading.local()
+
+    def close(self) -> None:
+        """关闭当前线程的数据库连接（解决 Windows 临时文件清理问题）"""
+        if hasattr(self.local, "conn") and self.local.conn is not None:
+            self.local.conn.close()
+            self.local.conn = None
+
+    # ── Phase 3：读方法 ──────────────────────────────
+    def list_chapters(self, page: int = 1, page_size: int = 10, status: Optional[str] = None,) -> list[dict]:
+        """章节分页列表，按 num 升序
+        参数：
+            page:     页码（从 1 开始）
+            page_size: 每页条数
+            status:   按状态过滤（None=全部）
+        返回：
+            list[dict]: 每项含 chapters 表全部字段
+        """
+        conn = self.get_conn()
+        offset = (page - 1) * page_size
+
+        if(status):
+            rows = conn.execute(
+                "SELECT * FROM chapters WHERE status = ?"
+                "ORDER BY num LIMIT ? OFFSET ?",
+                (status, page_size, offset),
+            )
+        else:
+            rows = conn.execute(
+                "SELECT * FROM chapters ORDER BY num LIMIT ? OFFSET ?",
+                (page_size, offset),
+            )
+        return [dict(r) for r in rows.fetchall()]
+
+
 
     # ── 连接管理 ──────────────────────────────────────
 
@@ -41,10 +78,10 @@ class KnowledgeBase:
             self.local.conn = conn
         return self.local.conn
 
-    # ── 建表 ──────────────────────────────────────────
+    # ── 建表 + Schema 迁移 ────────────────────────────
 
     def init_db(self) -> None:
-        """创建 5 张核心表 + 索引（幂等，可重复调用）"""
+        """创建 6 张核心表 + 索引（幂等，可重复调用）"""
         conn = self.get_conn()
 
         conn.executescript("""
@@ -61,8 +98,8 @@ class KnowledgeBase:
                 error_msg   TEXT,
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                file_size   INTEGER DEFAULT 0,    -- 文件大小（字节）
-                file_hash TEXT DEFAULT ''      -- MD5 哈希
+                file_size   INTEGER DEFAULT 0,
+                file_hash   TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_chapters_num ON chapters(num);
             CREATE INDEX IF NOT EXISTS idx_chapters_status ON chapters(status);
@@ -97,25 +134,285 @@ class KnowledgeBase:
 
             -- timeline_events：时间线事件
             CREATE TABLE IF NOT EXISTS timeline_events (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                chapter     INTEGER NOT NULL,
-                story_time  TEXT,
-                event       TEXT NOT NULL,
-                characters  TEXT DEFAULT '[]',
-                is_anomaly  INTEGER DEFAULT 0
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chapter         INTEGER NOT NULL,
+                story_time      TEXT,
+                event           TEXT NOT NULL,
+                narrative_order INTEGER DEFAULT 1,
+                characters      TEXT DEFAULT '[]',
+                location        TEXT DEFAULT '',
+                evidence        TEXT DEFAULT '',
+                is_anomaly      INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_timeline_chapter ON timeline_events(chapter);
 
             -- foreshadowings：伏笔
             CREATE TABLE IF NOT EXISTS foreshadowings (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                description     TEXT NOT NULL,
-                laid_chapter    INTEGER NOT NULL,
-                recovered_at    INTEGER,
-                status          TEXT DEFAULT 'unrecovered',
-                related_chars   TEXT DEFAULT '[]',
-                confidence      REAL DEFAULT 1.0
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                description       TEXT NOT NULL,
+                laid_chapter      INTEGER NOT NULL,
+                recovered_at      INTEGER,
+                status            TEXT DEFAULT 'unrecovered',
+                related_chars     TEXT DEFAULT '[]',
+                evidence          TEXT DEFAULT '',
+                confidence        REAL DEFAULT 1.0,
+                confidence_label  TEXT DEFAULT 'medium'
             );
             CREATE INDEX IF NOT EXISTS idx_foreshadowings_status ON foreshadowings(status);
             CREATE INDEX IF NOT EXISTS idx_foreshadowings_laid ON foreshadowings(laid_chapter);
+
+            -- llm_parse_logs：LLM 调用日志
+            CREATE TABLE IF NOT EXISTS llm_parse_logs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chapter_id      INTEGER NOT NULL,
+                model           TEXT DEFAULT '',
+                prompt_version  TEXT DEFAULT '',
+                raw_response    TEXT,
+                parse_status    TEXT DEFAULT 'success',
+                error_message   TEXT DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_parse_logs_chapter ON llm_parse_logs(chapter_id);
+            CREATE INDEX IF NOT EXISTS idx_parse_logs_status ON llm_parse_logs(parse_status);
         """)
+
+        # ── Schema 迁移：为旧表补充缺失的列 ────────────
+        self._migrate_schema(conn)
+
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        """为已有表补充新增的列（CREATE TABLE IF NOT EXISTS 不会加列）
+
+        每次扩容新增列时，在此方法末尾追加 ALTER TABLE。
+        ALTER TABLE 在 SQLite 中只支持 ADD COLUMN，且列已存在时会报错，
+        所以用 try/except 包裹。
+        """
+        migrations = [
+            # Phase 2：timeline_events 增加叙事顺序和位置字段
+            "ALTER TABLE timeline_events ADD COLUMN narrative_order INTEGER DEFAULT 1",
+            "ALTER TABLE timeline_events ADD COLUMN location TEXT DEFAULT ''",
+            "ALTER TABLE timeline_events ADD COLUMN evidence TEXT DEFAULT ''",
+            # Phase 2：foreshadowings 增加 evidence 和置信度标签
+            "ALTER TABLE foreshadowings ADD COLUMN evidence TEXT DEFAULT ''",
+            "ALTER TABLE foreshadowings ADD COLUMN confidence_label TEXT DEFAULT 'medium'",
+        ]
+
+        for sql in migrations:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                # 列已存在时 SQLite 抛 "duplicate column name"
+                pass
+
+    # ── 数据删除（重解析前清理旧数据）────────────────
+
+    def delete_chapter_data(self, chapter_num: int) -> None:
+        """删除某章在 characters（状态变更）、relations、timeline、伏笔 中的旧数据
+
+        注意：只删除"按章关联"的数据，不删除 characters 表整行。
+        characters 的行是跨章的（一个角色跨越多个章节），
+        这里只删该章在 status_history 中的相关记录。
+        """
+        conn = self.get_conn()
+        conn.execute("DELETE FROM relations WHERE chapter = ?", (chapter_num,))
+        conn.execute("DELETE FROM timeline_events WHERE chapter = ?", (chapter_num,))
+        conn.execute("DELETE FROM foreshadowings WHERE laid_chapter = ?", (chapter_num,))
+
+    # ── 解析日志 ──────────────────────────────────────
+
+    def save_parse_log(
+        self,
+        chapter_id: int,
+        model: str,
+        prompt_version: str,
+        raw_response: Optional[str],
+        parse_status: str = "success",
+        error_message: str = "",
+    ) -> None:
+        """记录一次 LLM 调用日志到 llm_parse_logs 表
+
+        参数：
+            chapter_id:    chapters 表中的 id
+            model:         LLM 模型名（如 deepseek-chat）
+            prompt_version: PROMPT_VERSION
+            raw_response:  LLM 原始返回（JSON 字符串）
+            parse_status:  success / repaired / failed
+            error_message: 失败时的错误信息
+        """
+        conn = self.get_conn()
+        conn.execute(
+            """INSERT INTO llm_parse_logs
+               (chapter_id, model, prompt_version, raw_response,
+                parse_status, error_message)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (chapter_id, model, prompt_version, raw_response,
+             parse_status, error_message),
+        )
+
+    # ── 事务写入（parser 调用入口）────────────────────
+
+    def write_chapter_extract(self, chapter_num: int, result: ChapterExtract, raw_text: str) -> int:
+        """事务性写入一章的完整解析结果
+
+        流程：
+        1. BEGIN 事务
+        2. DELETE 该章旧数据
+        3. INSERT characters（更新角色状态和历史）
+        4. INSERT relations
+        5. INSERT timeline_events
+        6. INSERT foreshadowings
+        7. UPDATE chapters（状态置为 parsed，保存title/summary等）
+        8. COMMIT（任一 INSERT 失败则 ROLLBACK）
+
+        参数：
+            chapter_num: 章序号
+            result:      Pydantic 校验通过的解析结果
+            raw_text:    原始章节正文（存到 chapters.raw_text 供重解析）
+
+        返回：
+            int: chapters 表中该章的 id
+        """
+        conn = self.get_conn()
+
+        try:
+            conn.execute("BEGIN")
+
+            # 1. 清理该章旧数据
+            self.delete_chapter_data(chapter_num)
+
+            # 2. 更新 characters 表
+            for char in result.characters:
+                existing = conn.execute(
+                    "SELECT id, first_appeared, last_seen, current_status, "
+                    "status_history FROM characters WHERE name = ?",
+                    (char.name,),
+                ).fetchone()
+
+                if existing:
+                    # 已有角色：更新最后出现章节、状态等信息
+                    old_status = existing["current_status"]
+                    old_history = existing["status_history"]
+
+                    # 记录状态变更（如果有变化）
+                    if char.status.model_dump():
+                        change_entry = {
+                            "chapter": chapter_num,
+                            "field": "status",
+                            "old": old_status,
+                            "new": char.status.model_dump(),
+                        }
+                        import json
+                        history = json.loads(old_history)
+                        history.append(change_entry)
+
+                        conn.execute(
+                            """UPDATE characters
+                               SET last_seen = ?,
+                                   current_status = ?,
+                                   status_history = ?,
+                                   updated_at = CURRENT_TIMESTAMP
+                               WHERE name = ?""",
+                            (chapter_num,
+                             char.status.model_dump_json(),
+                             json.dumps(history, ensure_ascii=False),
+                             char.name),
+                        )
+                    else:
+                        # 状态无变化，只更新 last_seen
+                        conn.execute(
+                            "UPDATE characters SET last_seen = ?, "
+                            "updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                            (chapter_num, char.name),
+                        )
+                else:
+                    # 新角色：插入
+                    conn.execute(
+                        """INSERT INTO characters
+                           (name, aliases, first_appeared, last_seen,
+                            current_status, description)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (char.name,
+                         str(char.aliases),
+                         chapter_num,
+                         chapter_num,
+                         char.status.model_dump_json(),
+                         char.description),
+                    )
+
+            # 3. 写入 relations
+            for rel in result.relations:
+                conn.execute(
+                    """INSERT INTO relations
+                       (char_a, char_b, relation, chapter, detail)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (rel.char_a, rel.char_b, rel.relation, chapter_num, rel.detail),
+                )
+
+            # 4. 写入 timeline_events
+            for evt in result.timeline_events:
+                conn.execute(
+                    """INSERT INTO timeline_events
+                       (chapter, story_time, event, narrative_order,
+                        characters, location, evidence)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (chapter_num,
+                     evt.story_time,
+                     evt.event,
+                     evt.narrative_order,
+                     str(evt.characters),
+                     evt.location,
+                     evt.evidence),
+                )
+
+            # 5. 写入 foreshadowings
+            for fore in result.foreshadowings:
+                conn.execute(
+                    """INSERT INTO foreshadowings
+                       (description, laid_chapter, related_chars,
+                        evidence, confidence, confidence_label)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (fore.description,
+                     chapter_num,
+                     str(fore.related_chars),
+                     fore.evidence,
+                     fore.confidence,
+                     fore.confidence_label),
+                )
+
+            # 6. 更新 chapters 表
+            conn.execute(
+                """UPDATE chapters
+                   SET title = ?,
+                       summary = ?,
+                       word_count = ?,
+                       raw_text = ?,
+                       status = 'parsed',
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE num = ?""",
+                (result.title,
+                 result.summary,
+                 len(raw_text),
+                 raw_text,
+                 chapter_num),
+            )
+
+            # 7. 获取本章的 id（供 save_parse_log 用）
+            row = conn.execute(
+                "SELECT id FROM chapters WHERE num = ?", (chapter_num,)
+            ).fetchone()
+            chapter_id = row["id"] if row else 0
+
+            conn.commit()
+            logger.info("第 %s 章事务写入成功，%d 角色, %d 关系, %d 事件, %d 伏笔",
+                        chapter_num,
+                        len(result.characters),
+                        len(result.relations),
+                        len(result.timeline_events),
+                        len(result.foreshadowings))
+            return chapter_id
+
+        except Exception as e:
+            conn.rollback()
+            logger.error("第 %s 章事务写入失败，已回滚: %s", chapter_num, e)
+            raise
+
+
