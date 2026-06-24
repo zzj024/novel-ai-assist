@@ -1,5 +1,4 @@
 import re
-import re
 import hashlib
 import logging
 from pathlib import Path
@@ -14,7 +13,7 @@ from core.knowledge import KnowledgeBase
 - scan_chapters()：扫描 chapters/ 目录，对比数据库，标记变更
 """
 
-logging = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 def extract_chapter_num(filename: str) -> int:
     """从文件名提取章序号
         支持格式（优先级从高到低）：
@@ -55,7 +54,7 @@ def scan_chapters(knowledge_base: KnowledgeBase, chapters_dir: Path) -> list[int
         try:
             num = extract_chapter_num(md_file.name)
         except ValueError:
-            logging.warning(f"跳过无法识别章序号的文件: {md_file.name}")
+            logger.warning(f"跳过无法识别章序号的文件: {md_file.name}")
             continue
 
         # 计算文件大小和哈希
@@ -71,7 +70,7 @@ def scan_chapters(knowledge_base: KnowledgeBase, chapters_dir: Path) -> list[int
                 "VALUES (?, ?, ?, ?, 'pending')",
                 (num, md_file.name, file_size, file_hash),)
             marked.append(num)
-            logging.info(f"发现新章节：第{num}章")
+            logger.info(f"发现新章节：第{num}章")
         elif row["file_size"] != file_size or row["file_hash"] != file_hash:
             # 内容变了 -> 更新
             conn.execute("UPDATE chapters SET status = 'pending', "
@@ -80,7 +79,7 @@ def scan_chapters(knowledge_base: KnowledgeBase, chapters_dir: Path) -> list[int
                 (file_size, file_hash, num),
             )
             marked.append(num)
-            logging.info(f"章节内容已变更：第{num}章 {md_file.name}")
+            logger.info(f"章节内容已变更：第{num}章 {md_file.name}")
         else:
             # 未变 -> 忽略
             continue

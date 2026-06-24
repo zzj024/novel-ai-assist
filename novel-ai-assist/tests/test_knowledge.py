@@ -203,7 +203,6 @@ def test_list_chapters_pagination(tmp_db_path):
     all_chapters = kb.list_chapters(page=1,page_size=100)
     assert len(all_chapters) == 5
 
-
 def test_get_chapter_exists(tmp_db_path):
     """存在的章节返回完整字段"""
     from core.knowledge import KnowledgeBase
@@ -237,5 +236,32 @@ def test_get_chapter_not_found(tmp_db_path):
     chapter = kb.get_chapter(999)
     assert chapter is None
 
+def test_get_character_exists(tmp_db_path):
+    """存在的角色返回完整字段"""
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+    conn = kb.get_conn()
+    conn.execute("INSERT INTO characters (name, aliases, first_appeared, last_seen, "
+        "current_status, description) VALUES (?,?, ?, ?, ?, ?)",
+        ("林婉儿", '["婉儿", "林师妹"]', 1, 1,'{"physical": "金丹期", "location":"天剑山"}',"天剑宗弟子"),
+    )
+    conn.commit()
+
+    char = kb.get_character("林婉儿")
+    assert char is not None
+    assert char["name"] == "林婉儿"
+    assert char["first_appeared"] == 1
+    assert char["last_seen"] == 1
 
 
+def test_get_character_not_found(tmp_db_path):
+    """不存在的角色返回 None"""
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+
+    char = kb.get_character("不存在的人")
+    assert char is None

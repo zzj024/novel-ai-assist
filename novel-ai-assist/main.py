@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from config import load_config
 from core.knowledge import KnowledgeBase
 from watcher.monitor import scan_chapters
+from api.routes import router
 
 logger = logging.getLogger(__name__)
 
@@ -71,43 +72,6 @@ def create_app(base_dir: Path = Path(".")) -> FastAPI:
     app.state.scan_timer = None
     app.state.stop_event = threading.Event()
 
-    @app.get("/api/status")
-    async def status():
-        """系统状态健康检查"""
-        kb = app.state.knowledge_base
-        chapters_dir = app.state.base_dir / "chapters"
-
-        # 查询数据库统计
-        total_files = len(list(chapters_dir.glob("*.md")))
-
-        if kb:
-            conn = kb.get_conn()
-            total_chapters = conn.execute(
-                "SELECT COUNT(*) FROM chapters"
-            ).fetchone()[0]
-            parsed = conn.execute(
-                "SELECT COUNT(*) FROM chapters WHERE status = 'parsed'"
-            ).fetchone()[0]
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM chapters WHERE status = 'pending'"
-            ).fetchone()[0]
-            errors = conn.execute(
-                "SELECT COUNT(*) FROM chapters WHERE status = 'error'"
-            ).fetchone()[0]
-        else:
-            total_chapters = parsed = pending = errors = 0
-
-        return {
-            "ok": True,
-            "data": {
-                "novel_dir": str(app.state.base_dir),
-                "total_files": total_files,
-                "total_chapters": total_chapters,
-                "parsed_chapters": parsed,
-                "pending_chapters": pending,
-                "error_chapters": errors,
-                "watcher_active": app.state.scan_timer is not None,
-            },
-        }
+    app.include_router(router)
 
     return app

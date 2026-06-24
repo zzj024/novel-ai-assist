@@ -60,9 +60,30 @@ class KnowledgeBase:
             )
         return [dict(r) for r in rows.fetchall()]
 
+    def get_chapter(self, num: int) -> Optional[dict]:
+        """按章序号查询单章完整信息
+        参数：
+            num: 章序号
+        返回：
+            dict: chapters 表全部字段
+            None: 章节不存在
+        """
+        conn = self.get_conn()
+        row = conn.execute("SELECT * FROM chapters WHERE num = ?",(num,)).fetchone()
+        return dict(row) if row else None
 
+    def get_character(self, name: str) -> Optional[dict]:
+        """按角色名查询完整信息
+        参数：
+            name: 角色名（精确匹配）
 
-    # ── 连接管理 ──────────────────────────────────────
+        返回：
+            dict: characters 表全部字段
+            None: 角色不存在
+        """
+        conn = self.get_conn()
+        row = conn.execute("SELECT * FROM characters WHERE name = ?", (name,)).fetchone()
+        return dict(row) if row else None
 
     def get_conn(self) -> sqlite3.Connection:
         """获取当前线程的数据库连接（线程隔离，延迟创建）"""
@@ -77,6 +98,79 @@ class KnowledgeBase:
 
             self.local.conn = conn
         return self.local.conn
+
+    def count_chapters(self, status: str | None = None) -> int:
+        """统计章节总数
+        参数：status: 按状态筛选（None=全部，'parsed'=已解析等）
+        返回：int: 符合条件的章节数
+        """
+        conn = self.get_conn()
+        if status:
+            row = conn.execute("SELECT COUNT(*) FROM chapters WHERE status = ?",(status,)).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()
+        return row[0]
+
+    def list_characters(self, name: str | None = None) -> list[dict]:
+        """角色列表，支持按名模糊搜索"""
+        conn = self.get_conn()
+        if name:
+            rows = conn.execute(
+                "SELECT * FROM characters WHERE name LIKE ? ORDER BY first_appeared",
+                (f"%{name}%",),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM characters ORDER BY first_appeared"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_relations(self, char_a: str | None = None,
+                       char_b: str | None = None) -> list[dict]:
+        """人物关系列表，支持按角色筛选"""
+        conn = self.get_conn()
+        conditions: list[str] = []
+        params: list[str] = []
+        if char_a:
+            conditions.append("char_a = ?")
+            params.append(char_a)
+        if char_b:
+            conditions.append("char_b = ?")
+            params.append(char_b)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = conn.execute(
+            f"SELECT * FROM relations {where} ORDER BY chapter",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_timeline(self, chapter: int | None = None) -> list[dict]:
+        """时间线事件列表，支持按章节筛选"""
+        conn = self.get_conn()
+        if chapter:
+            rows = conn.execute(
+                "SELECT * FROM timeline_events WHERE chapter = ? ORDER BY narrative_order",
+                (chapter,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM timeline_events ORDER BY chapter, narrative_order"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_foreshadowings(self, status: str | None = None) -> list[dict]:
+        """伏笔列表，支持按状态筛选"""
+        conn = self.get_conn()
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM foreshadowings WHERE status = ? ORDER BY laid_chapter",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM foreshadowings ORDER BY laid_chapter"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── 建表 + Schema 迁移 ────────────────────────────
 
@@ -414,5 +508,4 @@ class KnowledgeBase:
             conn.rollback()
             logger.error("第 %s 章事务写入失败，已回滚: %s", chapter_num, e)
             raise
-
 

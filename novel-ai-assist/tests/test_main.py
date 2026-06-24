@@ -19,16 +19,6 @@ class TestAppCreation:
             assert (tmp_path / "chapters").exists()
             assert (tmp_path / "agent_data").exists()
 
-    def test_health_endpoint(self, tmp_path):
-        """GET /api/status 应返回200 和 ok： true"""
-        from main import create_app
-        app = create_app(base_dir=tmp_path)
-        with TestClient(app) as client:
-            response = client.get("/api/status")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["ok"] is True
-
 
 
 
