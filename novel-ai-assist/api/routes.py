@@ -22,6 +22,8 @@ from api.schemas import (
     TimelineResponse,
     ForeshadowingListResponse,
     ForeshadowingResponse,
+    QueryRequest,
+    QueryResponse,
 )
 from core.knowledge import KnowledgeBase
 from api.deps import get_db
@@ -200,5 +202,45 @@ def list_foreshadowings(
     return ok(data=ForeshadowingListResponse(
         items=foreshadowings, total=total,
         recovered=recovered, unrecovered=unrecovered,
+    ))
+
+
+# ── 对话查询 ──────────────────────────────────
+
+
+from functools import cache
+
+from openai import OpenAI as _OpenAI
+
+
+@cache
+def _get_cheap_client() -> _OpenAI:
+    """缓存小模型客户端（qwen2.5:7b，本地）"""
+    from config import load_config
+    cfg = load_config()
+    return _OpenAI(api_key="", base_url=cfg.query_cheap_base)
+
+
+@cache
+def _get_expensive_client() -> _OpenAI:
+    """缓存大模型客户端（DeepSeek）"""
+    from config import load_config
+    cfg = load_config()
+    return _OpenAI(api_key=cfg.api_key, base_url=cfg.api_base)
+
+
+@router.post("/query", response_model=QueryResponse)
+def query_question(
+    req: QueryRequest,
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """对话式查询——自然语言问任何已记录的信息"""
+    from core.query import QueryEngine
+
+    engine = QueryEngine(kb, _get_cheap_client(), _get_expensive_client())
+    result = engine.run(req.question)
+    return ok(data=QueryResponse(
+        answer=result.get("answer", ""),
+        source=result.get("source", "unknown"),
     ))
 

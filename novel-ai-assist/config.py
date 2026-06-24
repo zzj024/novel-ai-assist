@@ -22,6 +22,8 @@ class Settings(BaseModel):
     model: str = "deepseek-chat"
     language: str = "zh"
     auto_scan_interval: int = 3600
+    query_cheap_base: str = "http://localhost:11434/v1"
+    query_cheap_model: str = "qwen2.5:7b"
 
     @property
     def masked_api_key(self) -> str:
@@ -35,6 +37,8 @@ DEFAULT_CONFIG = {
     "model": "deepseek-chat",
     "language": "zh",
     "auto_scan_interval": 3600,
+    "query_cheap_base": "http://localhost:11434/v1",
+    "query_cheap_model": "qwen2.5:7b",
 }
 
 def save_config(settings: Settings, config_path: Path) -> None:

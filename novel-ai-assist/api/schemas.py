@@ -145,3 +145,16 @@ class ForeshadowingListResponse(BaseModel):
     total: int = Field(0, description="总伏笔数")
     recovered: int = Field(0, description="已回收数")
     unrecovered: int = Field(0, description="未回收数")
+
+
+# ── 对话查询 ─────────────────────────────────
+
+class QueryRequest(BaseModel):
+    """对话查询请求"""
+    question: str = Field(..., min_length=1, description="用户问题")
+
+
+class QueryResponse(BaseModel):
+    """对话查询响应"""
+    answer: str = Field("", description="答案文本")
+    source: str = Field("sql", description="答案来源（sql/llm/mixed/polished）")

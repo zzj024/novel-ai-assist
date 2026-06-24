@@ -1,5 +1,91 @@
 # 开发日志
 
+## 2026-06-25 — Phase 3 Step 4 query 引擎 + GPT 架构 Review
+
+### 完成
+
+- **core/query.py** — 三层查询引擎完整实现
+  - _split() → qwen2.5:7b 拆句 + 实体提取 + 意图分类
+  - _route() → 8 种意图路由到 KnowledgeBase SQL 查询
+  - _fallback_llm() → DeepSeek 带精简上下文兜底
+  - _merge() → 全 SQL 代码模板合并 / 混 LLM 可选润色
+  - FocusTracker → 当前讨论角色追踪（5 轮无实体自动清空）
+  - ConversationHistory → 最近 3 轮对话记忆
+
+- **api/routes.py** — POST /api/query 端点
+- **api/schemas.py** — QueryRequest + QueryResponse 模型
+- **config.py** — 新增 query_cheap_base / query_cheap_model 字段
+
+### GPT 架构 Review 结论
+
+提交 GPT 评审 query 引擎设计，核心发现：
+
+| 级别 | 问题 | 说明 |
+|------|------|------|
+| P0 | 小模型职责过载 | 7B 模型同时做拆句+实体+意图+指代，单点语义瓶颈 |
+| P0 | 缺规则降级 | 小模型挂了目前全瘫，需要 heuristic 兜底 |
+| P0 | 缺拆句质量检查 | 返回 JSON 后应验证字段完整性，不合格自动降级 |
+| P1 | 缺 episodic memory | "黑衣人"类描述性实体无法解析，Phase 4 一起做 |
+| P1 | 意图类型不足 | 缺 event / organization / causality |
+| P2 | 答案合并缺冲突检测 | SQL 与 LLM 答案矛盾时不报错 |
+
+详见 `.claude/memory/tech-debt-review-20260625.md`
+
+### 待办
+
+- P0: 加规则降级 + 质量检查（heuristic_intent + extract_regex_entities）
+- P0: 拆句质量验证函数
+- P1: Phase 4 加 episodic entity memory
+- P1: 扩意图类型（event/organization/recent/causality）
+
+---
+
+## 2026-06-24 — Phase 3 Step 2 api/ 基础设施完成
+
+### 完成
+
+- **P3-01 KnowledgeBase 查询方法扩展**
+  - count_chapters() — 按状态统计章节数
+  - list_characters() — 角色列表 + 模糊搜索
+  - list_relations() — 关系列表 + 双端筛选
+  - list_timeline() — 时间线事件 + 按章节筛选
+  - list_foreshadowings() — 伏笔列表 + 按状态筛选
+
+- **P3-02 api/ 基础设施（4 个文件）**
+  - schemas.py — 14 个 Pydantic 请求/响应模型
+  - responses.py — ok()/err() 统一信封 + jsonable_encoder 序列化
+  - deps.py — get_db() yield generator 注入（留事务扩展点）
+  - routes.py — 8 个 REST 端点（含 /api/status 从 main.py 迁入）
+
+- **测试覆盖**
+  - test_schemas.py — 17 个 Schema 验证
+  - test_api.py — 15 个 API 集成测试（TestClient + dependency_overrides）
+  - 全量 70 passed, 1 skipped（集成测试因缺 API key 跳过）
+
+### 修复
+
+- watcher/monitor.py — 重复 import re + logging 变量名冲突
+- core/knowledge.py — get_character() 缩进位错
+- api/deps.py — get_config() 调用 load_config() 缺参数（已替换为直接创建 KB）
+- api/routes.py — error_msg 来自 DB 可能为 None，需 or "" 处理
+- api/responses.py — 缺少 jsonable_encoder，Pydantic 模型无法 JSON 序列化
+
+### 关键决策
+
+| 决策 | 结论 | 理由 |
+|------|------|------|
+| deps.py get_config | 暂时移除 | Settings 模型当前不含 db_path |
+| 依赖覆盖方式 | generator function | get_db 是 yield generator，覆盖必须对等 |
+| 测试隔离 | dependency_overrides | 每个测试用独立 tmp_path 数据库 |
+
+### 待办
+
+- Phase 3 Step 3：确定性 REST 端点增强（分页/排序）
+- Phase 3 Step 4：core/query.py 三层查询引擎（正则 → SQL → LLM）
+- Phase 3 Step 5：WebSocket /ws 推送
+
+---
+
 ## 2026-06-24 — Phase 3 规划设计 + 全文档同步
 
 ### 完成
