@@ -214,6 +214,32 @@ OUTPUT_SCHEMA = {
                 "required": ["description"]
             }
         },
+        "episodic_entities": {
+            "type": "array",
+            "description": "本章中以描述性方式出现的角色（如'黑衣人''白衣女子'），非名字形式",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "descriptor": {
+                        "type": "string",
+                        "description": "描述符（如'黑衣人'）"
+                    },
+                    "resolved_to": {
+                        "type": "string",
+                        "description": "如果该描述指代某个已知角色，填角色名；否则留空"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "简短上下文（如'一个黑衣男子出现在山巅'）"
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "原文依据（30字以内）"
+                    }
+                },
+                "required": ["descriptor"]
+            }
+        },
         "unresolved_questions": {
             "type": "array",
             "description": "本章结束后仍未解答的问题",

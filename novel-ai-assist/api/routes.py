@@ -28,6 +28,7 @@ from api.schemas import (
     ForeshadowingResponse,
     QueryRequest,
     QueryResponse,
+    QueryExplainResponse,
 )
 from core.knowledge import KnowledgeBase
 from api.deps import get_db
@@ -273,10 +274,39 @@ def query_question(
     from core.query import QueryEngine
 
     engine = QueryEngine(kb, _get_cheap_client(), _get_expensive_client())
-    result = engine.run(req.question)
+    result = engine.run(req.question, debug=req.debug)
     return ok(data=QueryResponse(
         answer=result.get("answer", ""),
         source=result.get("source", "unknown"),
+        debug_trace=result.get("debug_trace"),
+    ))
+
+
+@router.post("/query/debug", response_model=QueryExplainResponse)
+def query_explain(
+    req: QueryRequest,
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """查询路由解释——展示 query 引擎内部决策过程"""
+    from core.query import QueryEngine
+
+    engine = QueryEngine(kb, _get_cheap_client(), _get_expensive_client())
+    engine.run(req.question, debug=True)
+    trace = engine._debug_trace or []
+
+    sub_questions = []
+    for entry in trace:
+        sub_questions.append({
+            "original": entry.get("original", ""),
+            "entities": entry.get("entities_after", []),
+            "intent": entry.get("intent_after", ""),
+            "intent_scores": entry.get("intent_scores", {}),
+        })
+
+    return ok(data=QueryExplainResponse(
+        question=req.question,
+        sub_questions=sub_questions,
+        debug_trace=trace,
     ))
 
 

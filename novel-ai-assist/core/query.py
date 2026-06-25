@@ -24,29 +24,158 @@ from core.knowledge import KnowledgeBase
 
 # ── 拆句 Prompt ─────────────────────────────
 
-SPLIT_PROMPT = """你是一个问题拆分助手。将用户的问题拆成单个子问题。
+SPLIT_PROMPT = """你是一个小说问题拆分助手。
 
-规则：
-1. 每个子问题必须保留 original 原文
-2. 如果原文有"他/她/它"等代词，根据对话历史替换为具体角色名
-3. entities 列出所有提及的角色名
-4. intent_hint 从下方列表中选择
+你的任务只有两个：
+1. 将用户问题拆成可以独立查询的子问题。
+2. 仅在指代非常明确时，将"他/她/它/此人/对方"等代词替换为具体角色名。
 
-intent_hint 可选值：
-  character.status    — 角色修为/状态/位置
-  character.info      — 角色是谁/背景描述
-  relation.between    — 两个角色的关系
-  relation.all        — 某个角色的所有关系
-  chapter.summary     — 章节内容摘要
-  chapter.list        — 章节列表
-  foreshadowing.list  — 伏笔/悬念
-  timeline.list       — 时间线事件
-  unknown             — 以上都不匹配
+不要做以下事情：
+- 不要判断意图。
+- 不要提取实体。
+- 不要回答问题。
+- 不要编造角色名。
+- 指代不明确时，保留原文。
 
-返回格式（JSON 数组）：
+返回 JSON 数组，最多 5 项。
+每项只包含 original 字段。
+
+示例：
+用户问题：林婉儿现在在哪里，她和萧炎是什么关系？
+返回：
 [
-  {"original": "林婉儿什么修为", "entities": ["林婉儿"], "intent_hint": "character.status"}
+  {"original": "林婉儿现在在哪里"},
+  {"original": "林婉儿和萧炎是什么关系"}
 ]"""
+
+
+# ── 规则层常量 ───────────────────────────────
+
+VALID_INTENTS: set[str] = {
+    "character.status",
+    "character.info",
+    "relation.between",
+    "relation.all",
+    "chapter.summary",
+    "chapter.list",
+    "foreshadowing.list",
+    "timeline.list",
+}
+UNKNOWN_INTENT = "unknown"
+MAX_SUB_QUESTIONS = 5
+MAX_UNKNOWN_RATIO = 0.34
+MAX_ENTITIES_PER_ITEM = 4
+
+# 中文人名姓氏
+COMPOUND_SURNAMES = (
+    "欧阳|司马|上官|诸葛|东方|独孤|南宫|慕容|司徒|皇甫|尉迟|公孙|"
+    "轩辕|令狐|宇文|长孙|夏侯|端木|鲜于|闻人|呼延|百里|东郭"
+)
+
+SINGLE_SURNAMES = (
+    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华"
+    "金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花"
+    "方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于"
+    "时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄"
+    "米贝明臧计伏成戴谈宋庞熊纪舒屈项祝董梁杜阮蓝闵席季麻"
+    "强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田胡凌霍虞万"
+    "支柯昝管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔"
+    "吉龚程邢裴陆荣翁荀羊惠甄曲家封芮储靳汲邴糜松井段富巫"
+    "乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭"
+    "厉戎祖武符刘景詹束龙叶幸韶黎薄印宿白怀蒲从鄂索咸籍赖"
+    "卓蔺屠蒙池乔阳胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦"
+    "雍璩桑桂濮牛寿通边扈燕冀浦尚农温别庄晏柴瞿阎充慕连茹"
+    "习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广"
+    "禄阙东殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶空"
+    "曾毋沙乜养鞠须丰巢关蒯相查後荆红游竺权逯盖益桓公"
+)
+
+# 引号内实体
+QUOTED_ENTITY_RE = re.compile(
+    r"[「『\"'“]([^「」『』\"'“”，。！？；：、\s]{1,12})[」』\"'”]"
+)
+
+# 姓氏正则（复姓优先以避免拆分错误）
+_NAME_RE_PATTERN = (
+    rf"(?:{COMPOUND_SURNAMES})[一-鿿]{{1,2}}"
+    rf"|[{SINGLE_SURNAMES}][一-鿿]{{1,2}}"
+)
+NAME_RE = re.compile(_NAME_RE_PATTERN)
+
+# 上下文句式提取
+ENTITY_CONTEXT_PATTERNS = [
+    re.compile(
+        r"(?P<name>[一-鿿]{2,4})(?:的)?"
+        r"(?:修为|境界|实力|等级|状态|身体|情绪|心情|位置|在哪|去哪里|去向|下落)"
+    ),
+    re.compile(
+        r"(?:介绍一下|介绍|说说|查一下)?(?P<name>[一-鿿]{2,4})"
+        r"(?:是谁|什么身份|身份|背景|来历|资料|设定)"
+    ),
+    re.compile(
+        r"(?P<a>[一-鿿]{2,4})(?:和|与|跟|同)"
+        r"(?P<b>[一-鿿]{2,4})(?:的)?"
+        r"(?:关系|什么关系|认识|敌友|师徒|父子|母子|父女|母女|"
+        r"兄弟|姐妹|情侣|夫妻|仇人|同盟)"
+    ),
+]
+
+# 停用词（不是角色名的高频词）
+ENTITY_STOPWORDS: set[str] = {
+    "什么", "关系", "修为", "状态", "位置", "章节", "伏笔", "时间",
+    "时间线", "人物", "角色", "列表", "全部", "所有", "哪些",
+    "现在", "目前", "最后", "最新", "总结", "摘要", "内容",
+    "故事", "剧情", "背景", "身份", "信息", "介绍", "当前",
+}
+
+# 意图关键词映射
+INTENT_KEYWORDS: dict[str, list[str]] = {
+    "character.status": [
+        "修为", "境界", "实力", "等级", "状态", "身体", "受伤",
+        "情绪", "心情", "位置", "在哪", "在哪里", "去向", "下落",
+    ],
+    "character.info": [
+        "是谁", "谁是", "介绍", "背景", "身份", "来历", "资料",
+        "设定", "性格", "外貌", "年龄", "别名",
+    ],
+    "relation.between": [
+        "什么关系", "关系如何", "认识", "敌友", "师徒",
+        "父子", "母子", "父女", "母女", "兄弟", "姐妹", "情侣",
+        "夫妻", "仇人", "同盟", "阵营", "恩怨",
+    ],
+    "relation.all": [
+        "关系网", "人物关系", "所有关系", "全部关系", "关系列表",
+        "有哪些关系", "列出关系", "的关系",
+    ],
+    "chapter.summary": [
+        r"第[一二三四五六七八九十百千万零两\d]+章",
+        r"章节.*(?:总结|摘要|概括|内容|剧情|发生了什么)",
+        r"(?:总结|摘要|概括).*章节",
+    ],
+    "chapter.list": [
+        "章节列表", "有哪些章节", "全部章节", "所有章节", "列出章节",
+        "最近章节", "最新章节",
+    ],
+    "foreshadowing.list": [
+        "伏笔", "铺垫", "暗线", "未回收", "已回收", "回收情况",
+    ],
+    "timeline.list": [
+        "时间线", "大事记", "事件顺序", "发生顺序", "时间顺序",
+        "剧情顺序", "经历了什么",
+    ],
+}
+
+# 意图优先级（分数相同时按此顺序选择，越靠前优先级越高）
+INTENT_PRIORITY: list[str] = [
+    "relation.between",
+    "character.status",
+    "character.info",
+    "relation.all",
+    "chapter.summary",
+    "foreshadowing.list",
+    "timeline.list",
+    "chapter.list",
+]
 
 
 # ── Focus 追踪 ──────────────────────────────
@@ -107,11 +236,18 @@ class QueryEngine:
         self.expensive = expensive_client  # DeepSeek（兜底）
         self.focus = FocusTracker()
         self.conversation = ConversationHistory()
+        self._debug_trace: list[dict] = []
 
     # ── 外部入口 ──────────────────────────────────
 
-    def run(self, question: str) -> dict:
-        """对外唯一入口"""
+    def run(self, question: str, debug: bool = False) -> dict:
+        """对外唯一入口
+
+        参数：
+            question: 用户问题
+            debug: True 时在返回值中附加 debug_trace
+        """
+        self._debug_trace = [] if debug else None
         sub_questions = self._split_with_fallback(question)
 
         answers = self._route(sub_questions)
@@ -125,6 +261,8 @@ class QueryEngine:
         self.focus.update(all_entities)
         self.conversation.add(question, all_entities)
 
+        if self._debug_trace is not None:
+            result["debug_trace"] = self._debug_trace
         return result
 
     # ── 第一层：小模型拆句 ────────────────────────
@@ -144,7 +282,7 @@ class QueryEngine:
         return messages
 
     def _split(self, question: str) -> list[dict]:
-        """调小模型拆句，返回子问题列表"""
+        """调轻量版小模型拆句（只拆句+指代消解），entities+intent 由规则补齐"""
         messages = self._build_context(question)
         response = self.cheap.chat.completions.create(
             model="qwen2.5:7b",
@@ -154,17 +292,23 @@ class QueryEngine:
         )
         raw = response.choices[0].message.content
         if not raw:
-            return [{"original": question, "entities": [], "intent_hint": "unknown"}]
+            return self._enrich_split_items(
+                [{"original": question}], question
+            )
         try:
             result = json.loads(raw)
-            # 确保返回的是列表
             if isinstance(result, list):
-                return result
-            if isinstance(result, dict) and "questions" in result:
-                return result["questions"]
-            return [result]
+                items = result
+            elif isinstance(result, dict) and "questions" in result:
+                items = result["questions"]
+            else:
+                items = [result]
+            # 统一用规则补齐 entities + intent_hint
+            return self._enrich_split_items(items, question)
         except (json.JSONDecodeError, TypeError):
-            return [{"original": question, "entities": [], "intent_hint": "unknown"}]
+            return self._enrich_split_items(
+                [{"original": question}], question
+            )
 
     # ── 质量检查 + 降级 ─────────────────────────
 
@@ -173,7 +317,8 @@ class QueryEngine:
         # Level 0：qwen2.5:7b 拆句
         try:
             result = self._split(question)
-            if self._split_quality_ok(result):
+            result = self._accept_or_repair(result)
+            if result is not None:
                 return result
         except Exception:
             pass
@@ -181,7 +326,8 @@ class QueryEngine:
         # Level 1：规则拆句
         try:
             result = self._rule_split(question)
-            if self._split_quality_ok(result):
+            result = self._accept_or_repair(result)
+            if result is not None:
                 return result
         except Exception:
             pass
@@ -189,78 +335,128 @@ class QueryEngine:
         # Level 2：DeepSeek 强制拆句
         return self._deepseek_split(question)
 
-    def _split_quality_ok(self, result: list[dict]) -> bool:
-        """检查小模型拆句结果质量是否可接受"""
-        if not isinstance(result, list) or not result:
+    def _accept_or_repair(self, result: list[dict]) -> list[dict] | None:
+        """硬检查 + 软修复两阶段
+
+        硬检查失败 → None（触发降级）
+        软检查失败 → enrich 修复后返回
+        全部通过 → 原样返回
+        """
+        if not self._split_hard_ok(result):
+            return None
+        if not self._split_soft_ok(result):
+            return self._enrich_split_items(result, "")
+        return result
+
+    def _split_hard_ok(self, result: list[dict]) -> bool:
+        """硬检查：结构性校验（失败=无法修复，走降级）
+
+        检查：
+        - 类型正确
+        - 条目数合理
+        - 每项有 original(str) / entities(list) / intent_hint(str)
+        - entities 元素类型正确
+        - intent_hint 属于合法值
+        """
+        if not isinstance(result, list):
+            return False
+        if not (1 <= len(result) <= MAX_SUB_QUESTIONS):
             return False
 
-        # 统计有效子问题数
-        valid = 0
         for item in result:
             if not isinstance(item, dict):
                 return False
-            if not item.get("original"):
-                return False
-            if item.get("intent_hint") == "unknown":
-                continue  # unknown 不计入有效，但不直接判失败
-            valid += 1
 
-        # 没有一条有效 → 拒绝
-        if valid == 0:
+            original = item.get("original")
+            entities = item.get("entities")
+            intent_hint = item.get("intent_hint")
+
+            # original 必须是非空字符串
+            if not isinstance(original, str) or not original.strip():
+                return False
+
+            # entities 必须是字符串列表
+            if not isinstance(entities, list):
+                return False
+            if any(not isinstance(e, str) for e in entities):
+                return False
+            if len(entities) > MAX_ENTITIES_PER_ITEM:
+                return False
+
+            # intent_hint 必须是合法值
+            if not isinstance(intent_hint, str):
+                return False
+            if intent_hint != UNKNOWN_INTENT and intent_hint not in VALID_INTENTS:
+                return False
+
+        return True
+
+    def _split_soft_ok(self, result: list[dict]) -> bool:
+        """软检查：内容质量校验（失败=enrich 可修复）
+
+        检查：
+        - unknown 比例 ≤ MAX_UNKNOWN_RATIO
+        - relation.between 必须有 ≥2 个实体
+        - char.status/char.info 在有明确实体线索时 entities 不能为空
+        - 无重复 original
+        """
+        unknown_count = 0
+        originals: list[str] = []
+
+        for item in result:
+            original = item.get("original", "").strip()
+            entities = item.get("entities", [])
+            intent_hint = item.get("intent_hint", "")
+
+            originals.append(original)
+
+            if intent_hint == UNKNOWN_INTENT:
+                unknown_count += 1
+
+            # relation.between 必须有 ≥2 个实体
+            if intent_hint == "relation.between" and len(entities) < 2:
+                return False
+
+            # char.status/char.info 在有实体线索时 entities 不能为空
+            if intent_hint in {"character.status", "character.info"}:
+                rule_entities = self._extract_entities(original)
+                if rule_entities and not entities:
+                    return False
+
+        # unknown 比例过高
+        if unknown_count / len(result) > MAX_UNKNOWN_RATIO:
             return False
 
-        # 超过 5 条 → 大概率抽风
-        if len(result) > 5:
+        # 重复 original
+        if len(set(originals)) != len(originals):
             return False
 
         return True
 
     def _rule_split(self, question: str) -> list[dict]:
-        """规则拆句：heuristic 兜底，不调任何模型"""
-        result = []
+        """规则拆句 + 实体 + 意图（不调任何模型）"""
+        text = question.strip()
+        if not text:
+            return []
 
-        # 按标点拆句
-        parts = re.split(r'[？?！!。；;]', question)
+        # 按标点拆句（逗号+过渡词拆句风险高，暂时只按句号/问号/分号拆）
+        parts = re.split(r'[？?！!。；;\n]+', text)
         parts = [p.strip() for p in parts if p.strip()]
 
-        for part in parts:
-            entities = []
-            # 用正则找引号/书名号内的实体名（简单启发式）
-            names = re.findall(r'[「」""『』《》](.+?)[「」""『』《》]', part)
-            names = [n for n in names if len(n) <= 10]
-            entities.extend(names)
+        # 如果没有拆开，保留原问题
+        if not parts:
+            parts = [text]
 
-            # 意图判断
-            intent = self._heuristic_intent(part)
-            result.append({
+        items: list[dict] = []
+        for part in parts[:MAX_SUB_QUESTIONS]:
+            items.append({
                 "original": part,
-                "entities": entities,
-                "intent_hint": intent,
+                "entities": [],
+                "intent_hint": UNKNOWN_INTENT,
             })
 
-        return result if result else [{
-            "original": question,
-            "entities": [],
-            "intent_hint": "unknown",
-        }]
-
-    def _heuristic_intent(self, text: str) -> str:
-        """关键词规则判断意图"""
-        if re.search(r'修为|境界|伤势|状态|位置|在哪', text):
-            return "character.status"
-        if re.search(r'是谁|是.*什么人|背景|介绍', text):
-            return "character.info"
-        if re.search(r'关系|和谁|与谁|什么关系|敌对|师徒|盟友', text):
-            return "relation.between"
-        if re.search(r'(\d+)\s*章.*(讲|内容|摘要|发生)', text):
-            return "chapter.summary"
-        if re.search(r'有哪些章节|目录|清单', text):
-            return "chapter.list"
-        if re.search(r'伏笔|悬念|未回收|坑', text):
-            return "foreshadowing.list"
-        if re.search(r'时间线|事件|什么时候|那天|那天', text):
-            return "timeline.list"
-        return "unknown"
+        # 用 _enrich_split_items 统一补齐 entities + intent_hint
+        return self._enrich_split_items(items, question)
 
     def _deepseek_split(self, question: str) -> list[dict]:
         """DeepSeek 强制拆句——最后兜底，返回固定格式"""
@@ -286,6 +482,182 @@ class QueryEngine:
             pass
         # DeepSeek 也失败的话，最后保底
         return [{"original": question, "entities": [], "intent_hint": "unknown"}]
+
+    # ── 规则层：实体提取 ──────────────────────────
+
+    def _known_character_names(self) -> list[str]:
+        """返回已入库角色名和别名，长名优先（用于实体提取）"""
+        try:
+            rows = self.kb.get_all_character_names()
+        except Exception:
+            return []
+
+        names: set[str] = set()
+        for row in rows:
+            name = row.get("name")
+            if name:
+                names.add(str(name).strip())
+            aliases = row.get("aliases") or "[]"
+            if isinstance(aliases, str):
+                try:
+                    for alias in json.loads(aliases):
+                        if alias:
+                            names.add(str(alias).strip())
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return sorted(names, key=len, reverse=True)
+
+    def _known_episodic_descriptors(self) -> list[str]:
+        """返回已入库描述性实体的描述符列表（长名优先）"""
+        try:
+            return self.kb.get_all_episodic_descriptors()
+        except Exception:
+            return []
+
+    def _extract_entities(self, text: str) -> list[str]:
+        """多层实体提取：已知角色 → 描述性实体 → 引号 → 姓氏正则"""
+        found: list[str] = []
+
+        # 1. 已入库角色名/别名优先，最长优先匹配
+        for name in self._known_character_names():
+            if name and name in text:
+                found.append(name)
+
+        # 2. 已入库描述性实体（如"黑衣人""白衣女子"）
+        for desc in self._known_episodic_descriptors():
+            if desc and desc in text:
+                found.append(desc)
+
+        # 3. 引号实体
+        for match in QUOTED_ENTITY_RE.finditer(text):
+            found.append(match.group(1).strip())
+
+        # 去重 + 子串过滤："婉儿"是"林婉儿"的子串，不重复提取
+        result = self._dedupe_entities(found)
+        return self._filter_substrings(result)
+
+    def _filter_substrings(self, entities: list[str]) -> list[str]:
+        """过滤掉是其他实体子串的项（长名优先保留）"""
+        # 已按长名优先排序（_known_character_names 保证）
+        kept: list[str] = []
+        for entity in entities:
+            # 如果 entity 是已保留的某个实体的子串，跳过
+            if any(entity in k for k in kept if len(k) > len(entity)):
+                continue
+            kept.append(entity)
+        return kept
+
+    def _dedupe_entities(self, entities: list[str]) -> list[str]:
+        """去重 + 停用词过滤 + 长度约束"""
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for entity in entities or []:
+            if not isinstance(entity, str):
+                continue
+            name = entity.strip()
+            if not name:
+                continue
+            if name in ENTITY_STOPWORDS:
+                continue
+            if len(name) < 2 or len(name) > 12:
+                continue
+            if name not in seen:
+                seen.add(name)
+                result.append(name)
+
+        return result[:MAX_ENTITIES_PER_ITEM]
+
+    # ── 规则层：意图分类 ──────────────────────────
+
+    def _score_intent(self, text: str, entities: list[str] | None = None) -> dict[str, int]:
+        """计算所有意图的得分，返回得分字典（供 explain 和 classify 共用）"""
+        if entities is None:
+            entities = []
+        scores: dict[str, int] = {}
+
+        for intent, patterns in INTENT_KEYWORDS.items():
+            for pattern in patterns:
+                if re.search(pattern, text):
+                    scores[intent] = scores.get(intent, 0) + 2
+
+        # 关系类特判：两个实体 + 关系词 → relation.between
+        if len(entities) >= 2 and re.search(
+            r"关系|认识|敌友|师徒|父子|母子|情侣|仇人|同盟|恩怨", text
+        ):
+            scores["relation.between"] = scores.get("relation.between", 0) + 8
+
+        # 全量关系：出现"全部/所有/列出" + "关系" → relation.all
+        if re.search(r"全部|所有|有哪些|列出|关系网", text) and re.search(r"关系|人物关系", text):
+            scores["relation.all"] = scores.get("relation.all", 0) + 5
+
+        # 章节列表优先于章节摘要
+        if re.search(r"章节列表|全部章节|所有章节|有哪些章节|列出章节", text):
+            scores["chapter.list"] = scores.get("chapter.list", 0) + 6
+
+        # 第 N 章 → 倾斜 chapter.summary
+        if re.search(r"第[一二三四五六七八九十百千万零两\d]+章", text):
+            scores["chapter.summary"] = scores.get("chapter.summary", 0) + 4
+
+        return scores
+
+    def _classify_intent(self, text: str, entities: list[str] | None = None) -> str:
+        """加权打分判断意图（返回最高分意图）"""
+        scores = self._score_intent(text, entities)
+        if not scores:
+            return UNKNOWN_INTENT
+        # 分数相同时按 INTENT_PRIORITY 选择
+        priority_map = {name: i for i, name in enumerate(INTENT_PRIORITY)}
+        return max(scores.items(), key=lambda kv: (kv[1], -priority_map.get(kv[0], 999)))[0]
+
+    # ── 规则层：补齐 LLM 输出 ─────────────────────
+
+    def _enrich_split_items(self, items: list[dict], question: str) -> list[dict]:
+        """补齐 entities + intent_hint（供所有降级层使用）"""
+        enriched: list[dict] = []
+
+        for item in items:
+            original = item.get("original")
+            if not isinstance(original, str) or not original.strip():
+                continue
+            original = original.strip()
+
+            # 准备 trace（debug 模式）
+            trace_entry = None
+            if self._debug_trace is not None:
+                trace_entry = {
+                    "original": original,
+                    "entities_before": list(item.get("entities", [])),
+                    "intent_before": item.get("intent_hint", ""),
+                }
+
+            # 用规则提取 entities，合并已有的
+            rule_entities = self._extract_entities(original)
+            existing = item.get("entities")
+            if isinstance(existing, list):
+                merged = list(dict.fromkeys(list(existing) + rule_entities))
+            else:
+                merged = rule_entities
+
+            # 用规则分类 intent
+            intent_hint = item.get("intent_hint")
+            if intent_hint not in VALID_INTENTS:
+                intent_hint = self._classify_intent(original, merged)
+
+            # 完成 trace
+            if trace_entry is not None:
+                trace_entry["entities_after"] = list(self._dedupe_entities(merged))
+                trace_entry["intent_after"] = intent_hint
+                trace_entry["intent_scores"] = self._score_intent(original, merged)
+                self._debug_trace.append(trace_entry)
+
+            enriched.append({
+                "original": original,
+                "entities": self._dedupe_entities(merged),
+                "intent_hint": intent_hint,
+            })
+
+        return enriched[:MAX_SUB_QUESTIONS]
 
     def _has_unresolved_pronoun(self, sq: dict) -> bool:
         """检查子问题是否有未解析的代词（她/他/它）"""

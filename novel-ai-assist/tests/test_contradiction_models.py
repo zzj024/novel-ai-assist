@@ -174,3 +174,55 @@ class TestMakeFingerprint:
         fp = make_fingerprint("R", "t", 0, 0, [], "key")
         assert isinstance(fp, str)
         assert len(fp) == 64
+
+
+class TestSemver:
+    """语义版本号解析和比较测试"""
+
+    def test_parse_major_minor(self):
+        from core.contradiction.models import parse_semver
+        assert parse_semver("2.0") == (2, 0, 0)
+        assert parse_semver("1.5") == (1, 5, 0)
+
+    def test_parse_full_semver(self):
+        from core.contradiction.models import parse_semver
+        assert parse_semver("1.3.2") == (1, 3, 2)
+        assert parse_semver("2.0.1") == (2, 0, 1)
+
+    def test_parse_single_number(self):
+        from core.contradiction.models import parse_semver
+        assert parse_semver("3") == (3, 0, 0)
+
+    def test_parse_empty_or_invalid(self):
+        from core.contradiction.models import parse_semver
+        assert parse_semver("") == (0, 0, 0)
+        assert parse_semver("abc") == (0, 0, 0)
+        assert parse_semver("1.a") == (0, 0, 0)
+
+    def test_major_change_detected(self):
+        from core.contradiction.models import is_major_version_change
+        # 1.0 → 2.0: major 变更 → reset
+        assert is_major_version_change("1.0", "2.0") is True
+        # 1.5 → 2.0: major 变更 → reset
+        assert is_major_version_change("1.5", "2.0") is True
+
+    def test_minor_change_not_detected(self):
+        from core.contradiction.models import is_major_version_change
+        # 1.0 → 1.1: minor 变更 → 不 reset
+        assert is_major_version_change("1.0", "1.1") is False
+
+    def test_patch_change_not_detected(self):
+        from core.contradiction.models import is_major_version_change
+        # 1.0.0 → 1.0.1: patch 变更 → 不 reset
+        assert is_major_version_change("1.0.0", "1.0.1") is False
+        # 1.0 → 1.0.1: 不 reset
+        assert is_major_version_change("1.0", "1.0.1") is False
+
+    def test_same_version_no_change(self):
+        from core.contradiction.models import is_major_version_change
+        assert is_major_version_change("1.0", "1.0") is False
+
+    def test_empty_old_version(self):
+        """空 old_version（首次保存）→ 不触发 reset"""
+        from core.contradiction.models import is_major_version_change
+        assert is_major_version_change("", "1.0") is False

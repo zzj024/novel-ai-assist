@@ -35,6 +35,17 @@ class KnowledgeBase:
             self.local.conn = None
 
     # ── Phase 3：读方法 ──────────────────────────────
+    def get_all_character_names(self) -> list[dict]:
+        """返回所有角色名和别名（无分页，供 query 引擎规则层用）
+        返回：
+            list[dict]: [{"name": "林婉儿", "aliases": '["婉儿"]'}, ...]
+        """
+        conn = self.get_conn()
+        rows = conn.execute(
+            "SELECT name, aliases FROM characters"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_chapters(self, page: int = 1, page_size: int = 10, status: Optional[str] = None,) -> list[dict]:
         """章节分页列表，按 num 升序
         参数：
@@ -268,6 +279,37 @@ class KnowledgeBase:
             sort_by, sort_order, page, page_size, allowed_sorts,
         )
         
+    def list_episodic_entities(
+        self,
+        descriptor: str | None = None,
+        chapter: int | None = None,
+    ) -> list[dict]:
+        """列出描述性实体，支持按描述符或章节筛选"""
+        conn = self.get_conn()
+        if descriptor:
+            rows = conn.execute(
+                "SELECT * FROM episodic_entities WHERE descriptor = ? ORDER BY chapter",
+                (descriptor,),
+            ).fetchall()
+        elif chapter is not None:
+            rows = conn.execute(
+                "SELECT * FROM episodic_entities WHERE chapter = ? ORDER BY descriptor",
+                (chapter,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM episodic_entities ORDER BY chapter, descriptor"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_episodic_descriptors(self) -> list[str]:
+        """返回所有描述性实体的描述符列表（去重，供 query 引擎规则层用）"""
+        conn = self.get_conn()
+        rows = conn.execute(
+            "SELECT DISTINCT descriptor FROM episodic_entities ORDER BY descriptor"
+        ).fetchall()
+        return [r["descriptor"] for r in rows]
+
     # ── 建表 + Schema 迁移 ────────────────────────────
 
     def init_db(self) -> None:
@@ -382,6 +424,18 @@ class KnowledgeBase:
             );
             CREATE INDEX IF NOT EXISTS idx_reviews_fingerprint ON contradiction_reviews(fingerprint);
             CREATE INDEX IF NOT EXISTS idx_reviews_status ON contradiction_reviews(status);
+
+            -- episodic_entities：描述性实体（黑衣人/白衣女子等）
+            CREATE TABLE IF NOT EXISTS episodic_entities (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                descriptor      TEXT NOT NULL,
+                resolved_to     TEXT DEFAULT '',
+                chapter         INTEGER NOT NULL,
+                context         TEXT DEFAULT '',
+                evidence        TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_ee_descriptor ON episodic_entities(descriptor);
+            CREATE INDEX IF NOT EXISTS idx_ee_chapter ON episodic_entities(chapter);
         """)
 
         # ── Schema 迁移：为旧表补充缺失的列 ────────────
@@ -426,6 +480,7 @@ class KnowledgeBase:
         conn.execute("DELETE FROM relations WHERE chapter = ?", (chapter_num,))
         conn.execute("DELETE FROM timeline_events WHERE chapter = ?", (chapter_num,))
         conn.execute("DELETE FROM foreshadowings WHERE laid_chapter = ?", (chapter_num,))
+        conn.execute("DELETE FROM episodic_entities WHERE chapter = ?", (chapter_num,))
 
     # ── 解析日志 ──────────────────────────────────────
 
@@ -588,7 +643,20 @@ class KnowledgeBase:
                      fore.confidence_label),
                 )
 
-            # 6. 更新 chapters 表
+            # 6. 写入 episodic_entities
+            for ee in result.episodic_entities:
+                conn.execute(
+                    """INSERT INTO episodic_entities
+                       (descriptor, resolved_to, chapter, context, evidence)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (ee.descriptor,
+                     ee.resolved_to,
+                     chapter_num,
+                     ee.context,
+                     ee.evidence),
+                )
+
+            # 7. 更新 chapters 表
             conn.execute(
                 """UPDATE chapters
                    SET title = ?,

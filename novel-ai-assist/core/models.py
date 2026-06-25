@@ -88,6 +88,18 @@ class ForeshadowingModel(BaseModel):
     confidence_label: str = Field(default="medium", description="置信度标签")
 
 
+class EpisodicEntityModel(BaseModel):
+    """描述性实体——"黑衣人""白衣女子"等非命名角色
+
+    用于 Phase 4+ 实体记忆：当角色以描述性方式出现而不是名字时，
+    记录其描述符和上下文，后续章节出现相同描述符时可关联查询。
+    """
+    descriptor: str = Field(..., min_length=1, description="描述符（如'黑衣人'等）")
+    resolved_to: str = Field(default="", description="如后续查明身份，填角色名")
+    context: str = Field(default="", description="简短上下文描述")
+    evidence: str = Field(default="", description="原文依据（30字以内）")
+
+
 class UnresolvedQuestion(BaseModel):
     """未解问题——对应 OUTPUT_SCHEMA.unresolved_questions.items
 
@@ -130,5 +142,6 @@ class ChapterExtract(BaseModel):
     relations: list[RelationModel] = Field(default=[], description="关系列表")
     timeline_events: list[TimelineEvent] = Field(default=[], description="事件列表")
     foreshadowings: list[ForeshadowingModel] = Field(default=[], description="伏笔列表")
+    episodic_entities: list[EpisodicEntityModel] = Field(default=[], description="描述性实体列表")
     unresolved_questions: list[UnresolvedQuestion] = Field(default=[], description="未解问题")
     meta: MetaModel = Field(default_factory=MetaModel, description="解析元信息")

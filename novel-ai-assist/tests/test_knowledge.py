@@ -265,3 +265,96 @@ def test_get_character_not_found(tmp_db_path):
 
     char = kb.get_character("不存在的人")
     assert char is None
+
+
+# ── Episodic Entity ──────────────────────────────────
+
+def test_init_db_creates_episodic_entities_table(tmp_db_path):
+    """episodic_entities 表应被创建"""
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+
+    conn = kb.get_conn()
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='episodic_entities'"
+    )
+    assert cursor.fetchone() is not None
+
+
+def test_list_episodic_entities_empty(tmp_db_path):
+    """空库应返回空列表"""
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+    assert kb.list_episodic_entities() == []
+
+
+def test_list_episodic_entities_by_descriptor(tmp_db_path):
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+    conn = kb.get_conn()
+    conn.execute(
+        "INSERT INTO episodic_entities (descriptor, chapter, context) VALUES (?, ?, ?)",
+        ("黑衣人", 1, "一个黑衣男子出现在山巅"),
+    )
+    conn.execute(
+        "INSERT INTO episodic_entities (descriptor, chapter, context) VALUES (?, ?, ?)",
+        ("白衣女子", 1, "一位白衣女子御剑而来"),
+    )
+    conn.commit()
+
+    result = kb.list_episodic_entities(descriptor="黑衣人")
+    assert len(result) == 1
+    assert result[0]["descriptor"] == "黑衣人"
+    assert result[0]["chapter"] == 1
+
+
+def test_get_all_episodic_descriptors(tmp_db_path):
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+    conn = kb.get_conn()
+    conn.execute(
+        "INSERT INTO episodic_entities (descriptor, chapter) VALUES (?, ?)",
+        ("黑衣人", 1),
+    )
+    conn.execute(
+        "INSERT INTO episodic_entities (descriptor, chapter) VALUES (?, ?)",
+        ("白衣女子", 2),
+    )
+    conn.commit()
+
+    descriptors = kb.get_all_episodic_descriptors()
+    assert "黑衣人" in descriptors
+    assert "白衣女子" in descriptors
+
+
+def test_get_all_episodic_descriptors_empty(tmp_db_path):
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+    assert kb.get_all_episodic_descriptors() == []
+
+
+def test_delete_chapter_removes_episodic_entities(tmp_db_path):
+    """删除章节数据时，episodic 实体也应被清除"""
+    from core.knowledge import KnowledgeBase
+
+    kb = KnowledgeBase(tmp_db_path)
+    kb.init_db()
+    conn = kb.get_conn()
+    conn.execute(
+        "INSERT INTO episodic_entities (descriptor, chapter) VALUES (?, ?)",
+        ("黑衣人", 1),
+    )
+    conn.commit()
+
+    kb.delete_chapter_data(1)
+    assert kb.list_episodic_entities(descriptor="黑衣人") == []

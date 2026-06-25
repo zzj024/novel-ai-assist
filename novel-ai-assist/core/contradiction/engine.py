@@ -15,6 +15,7 @@ from core.contradiction.models import (
     RuleContext,
     RuleResult,
     ScanSummary,
+    is_major_version_change,
 )
 from core.contradiction.status_rules import (
     StatusChangeAnomalyRule,
@@ -120,7 +121,10 @@ class ContradictionEngine:
             rev = review_map.get(r.fingerprint)
             if rev is None:
                 continue
-            if rev.get("rule_version") and rev["rule_version"] != r.rule_version:
+            # 仅 major 版本变更才 reset（minor/patch 不触发）
+            if rev.get("rule_version") and is_major_version_change(
+                rev["rule_version"], r.rule_version
+            ):
                 r.status = "open"
                 self.kb.save_review(
                     fingerprint=r.fingerprint,

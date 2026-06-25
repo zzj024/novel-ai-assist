@@ -25,7 +25,7 @@ class TestOutputSchema:
     """输出 Schema 验证"""
 
     def test_schema_has_required_sections(self):
-        """输出 JSON 应包含 5 个核心部分"""
+        """输出 JSON 应包含所有核心部分"""
         from core.extract_prompt import OUTPUT_SCHEMA
 
         sections = OUTPUT_SCHEMA["properties"]
@@ -34,6 +34,7 @@ class TestOutputSchema:
         assert "relations" in sections
         assert "timeline_events" in sections
         assert "foreshadowings" in sections
+        assert "episodic_entities" in sections
 
 
 class TestBuildMessages:

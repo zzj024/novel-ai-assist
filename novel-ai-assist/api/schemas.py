@@ -152,12 +152,21 @@ class ForeshadowingListResponse(BaseModel):
 class QueryRequest(BaseModel):
     """对话查询请求"""
     question: str = Field(..., min_length=1, description="用户问题")
+    debug: bool = Field(False, description="是否返回 debug trace")
 
 
 class QueryResponse(BaseModel):
     """对话查询响应"""
     answer: str = Field("", description="答案文本")
     source: str = Field("sql", description="答案来源（sql/llm/mixed/polished）")
+    debug_trace: list[dict] | None = Field(None, description="enrich 调试追踪，仅 debug=True 时返回")
+
+
+class QueryExplainResponse(BaseModel):
+    """查询路由解释响应"""
+    question: str = Field("", description="原始问题")
+    sub_questions: list[dict] = Field(default_factory=list, description="子问题明细（含 entities / intent / intent_scores）")
+    debug_trace: list[dict] = Field(default_factory=list, description="enrich 完整追踪")
 
 
 # ── 矛盾检测 ─────────────────────────────────

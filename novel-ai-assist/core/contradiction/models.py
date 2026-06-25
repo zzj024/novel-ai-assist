@@ -16,8 +16,43 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
+import re
 
 from pydantic import BaseModel, Field
+
+# ── 语义版本工具 ──────────────────────────────
+
+SEMVER_RE = re.compile(r"^(\d+)(?:\.(\d+)(?:\.(\d+))?)?$")
+
+
+def parse_semver(version: str) -> tuple[int, int, int]:
+    """解析语义版本号，返回 (major, minor, patch)
+
+    "2.0"    → (2, 0, 0)
+    "1.3.2"  → (1, 3, 2)
+    "1.0"    → (1, 0, 0)
+    ""       → (0, 0, 0)  # 兜底
+    """
+    m = SEMVER_RE.match(version.strip())
+    if not m:
+        return (0, 0, 0)
+    major = int(m.group(1))
+    minor = int(m.group(2)) if m.group(2) else 0
+    patch = int(m.group(3)) if m.group(3) else 0
+    return (major, minor, patch)
+
+
+def is_major_version_change(old_version: str, new_version: str) -> bool:
+    """判断是否为 major 版本变更（仅 major 不同才触发 reset）
+
+    空 old_version（首次保存）→ 不触发
+    """
+    if not old_version:
+        return False
+    old_major, _, _ = parse_semver(old_version)
+    new_major, _, _ = parse_semver(new_version)
+    return old_major != new_major
+
 
 class Severity(str, Enum):
     """严重级别"""
@@ -81,6 +116,7 @@ class RuleResult(BaseModel):
     score: float = Field(default=1.0, ge=0.0, le=1.0,description="置信度")
     status: str = Field(default="open", description="open / dismissed / confirmed")
     explained: bool = Field(default=False,description="是否有合理解释（如跌境事件）")
+
 
 class ScanSummary(BaseModel):
     """一次扫描的统计摘要"""
