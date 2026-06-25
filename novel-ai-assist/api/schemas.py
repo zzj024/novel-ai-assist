@@ -158,3 +158,46 @@ class QueryResponse(BaseModel):
     """对话查询响应"""
     answer: str = Field("", description="答案文本")
     source: str = Field("sql", description="答案来源（sql/llm/mixed/polished）")
+
+
+# ── 矛盾检测 ─────────────────────────────────
+
+class ContradictionItem(BaseModel):
+    """矛盾检测结果条目"""
+    fingerprint: str = Field(..., description="稳定指纹")
+    issue_type: str = Field(..., description="问题类型")
+    kind: str = Field(..., description="结果种类")
+    severity: str = Field(..., description="严重级别")
+    contradiction_type: str = Field(..., description="矛盾类型")
+    rule_name: str = Field(..., description="规则名称")
+    description: str = Field(..., description="矛盾描述")
+    detail: dict = Field(default_factory=dict, description="结构化细节")
+    evidence: list[str] = Field(default_factory=list, description="原文引用")
+    chapter_range: list[int] = Field(default=[0, 0], description="涉及章节")
+    related_chars: list[str] = Field(default_factory=list, description="相关角色")
+    score: float = Field(1.0, description="置信度")
+    status: str = Field("open", description="open/dismissed/confirmed")
+    explained: bool = Field(False, description="是否有合理解释")
+
+
+class ContradictionListResponse(BaseModel):
+    """矛盾列表响应"""
+    items: list[ContradictionItem] = Field(default_factory=list)
+    total: int = Field(0)
+    summary: dict = Field(default_factory=dict)
+
+
+class ContradictionSummaryResponse(BaseModel):
+    """矛盾摘要响应"""
+    total: int = Field(0)
+    by_severity: dict[str, int] = Field(default_factory=dict)
+    by_issue_type: dict[str, int] = Field(default_factory=dict)
+    by_contradiction_type: dict[str, int] = Field(default_factory=dict)
+    open_count: int = Field(0)
+    dismissed_count: int = Field(0)
+    duration_ms: float = Field(0.0)
+
+
+class ScanResponse(BaseModel):
+    """扫描响应"""
+    summary: ContradictionSummaryResponse = Field(default_factory=lambda: ContradictionSummaryResponse())

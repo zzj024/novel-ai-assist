@@ -1,5 +1,64 @@
 # 开发日志
 
+## 2026-06-25 — Phase 4 MVP + P0-P3 工程化收敛完成
+
+### Phase 4 核心（12 条规则）
+
+- **A 类：状态变化异常**
+  - `StatusChangeAnomalyRule` — 检测 4 个字段的变化缺少解释性事件（不判断对错）
+  - `LocationChangeWithoutTravelRule` — 位置变化缺少旅程事件
+- **B 类：时间线**
+  - `SameTimeDifferentLocationRule` — 同角色同 story_time 不同地点（最稳的规则）
+  - `NarrativeOrderAnomalyRule` — 章内 narrative_order 不连续/重复
+  - `TimelineFlagRule` — 汇总 LLM 标记的 is_anomaly 事件
+- **C 类：关系**
+  - `RelationChangeAnomalyRule` — 关系变化缺少共同事件记录
+  - `RelationConflictRule` — 同章同角色对出现互斥关系声明
+- **D 类：伏笔**
+  - `ForeshadowingAgingRule` — 未回收伏笔超过 20 章
+  - `HighConfidenceStaleRule` — 高置信度伏笔超过 10 章未处理
+  - `ForeshadowingIntegrityRule` — 伏笔字段自相矛盾（recovered_at < laid_chapter 等）
+- **E 类：完整性**
+  - `AliasCollisionRule` — 同一别名被多个角色使用
+  - `ChapterIntegrityRule` — 章节序号不连续、重复文件名、error 章节统计
+
+### P0 — 测试体系（99 个测试）
+- 每条规则覆盖：正常命中、有解释不报、空数据不崩溃、边界条件、fingerprint 稳定
+- 引擎集成测试：scan/get_cached/paginate/filter/empty
+
+### P1 — 审查持久化
+- 新增 `contradiction_reviews` 表（fingerprint UNIQUE + status + reason + timestamps）
+- 3 个 API：`POST /dismiss`、`POST /confirm`、`DELETE /review`
+- Engine 自动加载 dismissed 状态过滤结果
+
+### P2 — 缓存失效
+- `knowledge_digest`：基于 parsed 章节数 + file_hash 链 → SHA256
+- `config_digest`：基于序列化配置 → SHA256
+- digest 变化自动失效缓存，重新扫描
+
+### P3 — 规则版本号
+- `BaseRule.version = "1.0"`，每条结果携带 `rule_version`
+- rule_version 存入 contradiction_reviews 表
+- 版本变化时自动将 dismissed → open（让用户重新审视）
+- 附带 Schema 迁移支持
+
+### 关键决策
+
+| 决策 | 方案 |
+|------|------|
+| 领域知识 | 零领域知识，不预设任何小说类型设定 |
+| IssueKind 区分 | contradiction / review_needed / tracking / integrity |
+| DataLoader | 一次性预加载全量数据到 RuleContext，避免 N+1 查询 |
+| 状态变化规则 | 只检测"变了但没说法"，不判断"金丹→元婴是否合理" |
+
+### 技术债务
+- 规则版本号尚未支持语义级别（major/minor/patch），目前任何版本变化都触发 reset
+- 缺规则覆盖率报告（Rule Coverage Map）
+- 缺 False Positive 分类体系
+- 缺 Rule Impact Heatmap
+
+---
+
 ## 2026-06-25 — Phase 3 全部完成（Step 3/5 + CORS + skill 三件套）
 
 ### 完成

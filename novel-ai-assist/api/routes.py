@@ -5,7 +5,11 @@
     - 参数校验由 FastAPI 通过类型注解自动处理
 """
 
-from fastapi import APIRouter, Depends, Query
+import json
+import logging
+import time
+
+from fastapi import APIRouter, Depends, Query, Request
 
 from api.responses import err, ok
 from api.schemas import (
@@ -27,7 +31,7 @@ from api.schemas import (
 )
 from core.knowledge import KnowledgeBase
 from api.deps import get_db
-import json
+
 
 
 router = APIRouter(prefix="/api")
@@ -297,8 +301,6 @@ async def websocket_endpoint(ws: WebSocket):
 # ── 手动触发解析 ──────────────────────────────
 
 
-import logging
-logger_routes = logging.getLogger(__name__)
 
 
 @router.post("/reparse/{num}")
@@ -342,4 +344,217 @@ async def reparse_chapter(num: int, kb: KnowledgeBase = Depends(get_db)):
         return err(f"解析失败：{result.get('error', '未知错误')}", status_code=500)
 
     return ok(data={"num": num, "status": "parsed"})
+
+
+# ── 矛盾检测 ─────────────────────────────────
+
+
+from core.contradiction.engine import ContradictionEngine
+
+
+@router.post("/contradictions/scan")
+async def scan_contradictions(
+    request: Request,
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """触发全量矛盾扫描"""
+    engine = ContradictionEngine(kb)
+    result = engine.scan_all()
+
+    # WebSocket 广播
+    try:
+        manager = request.app.state.ws_manager
+        manager.broadcast({
+            "type": "contradiction_scan_complete",
+            "data": {
+                "total": result.summary.total,
+                "critical_count": result.summary.by_severity.get("critical", 0),
+                "warning_count": result.summary.by_severity.get("warning", 0),
+                "open_count": result.summary.open_count,
+                "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            },
+        })
+    except Exception:
+        pass
+
+    return ok(data={
+        "summary": {
+            "total": result.summary.total,
+            "by_severity": result.summary.by_severity,
+            "by_issue_type": result.summary.by_issue_type,
+            "by_contradiction_type": result.summary.by_contradiction_type,
+            "open_count": result.summary.open_count,
+            "dismissed_count": result.summary.dismissed_count,
+            "duration_ms": result.summary.duration_ms,
+        },
+    })
+
+
+@router.get("/contradictions")
+def list_contradictions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    type: str | None = Query(None, alias="type"),
+    severity: str | None = Query(None, alias="severity"),
+    issue_type: str | None = Query(None, alias="issue_type"),
+    sort_by: str = Query("severity"),
+    sort_order: str = Query("desc"),
+    include_dismissed: bool = Query(False),
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """获取矛盾检测结果列表，支持筛选和分页"""
+    engine = ContradictionEngine(kb)
+    items, total, summary = engine.get_paginated_results(
+        page=page,
+        page_size=page_size,
+        type_filter=type,
+        severity_filter=severity,
+        issue_type_filter=issue_type,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        include_dismissed=include_dismissed,
+    )
+
+    contradiction_items = [
+        {
+            "fingerprint": r.fingerprint,
+            "issue_type": r.issue_type.value,
+            "kind": r.kind.value,
+            "severity": r.severity.value,
+            "contradiction_type": r.contradiction_type.value,
+            "rule_name": r.rule_name,
+            "description": r.description,
+            "detail": r.detail,
+            "evidence": r.evidence,
+            "chapter_range": [r.chapter_range[0], r.chapter_range[1]],
+            "related_chars": r.related_chars,
+            "score": r.score,
+            "status": r.status,
+            "explained": r.explained,
+        }
+        for r in items
+    ]
+
+    return ok(data={
+        "items": contradiction_items,
+        "total": total,
+        "summary": {
+            "total": summary.total,
+            "by_severity": summary.by_severity,
+            "by_issue_type": summary.by_issue_type,
+            "by_contradiction_type": summary.by_contradiction_type,
+            "open_count": summary.open_count,
+            "dismissed_count": summary.dismissed_count,
+            "duration_ms": summary.duration_ms,
+        },
+    })
+
+
+@router.get("/contradictions/summary")
+def get_contradiction_summary(kb: KnowledgeBase = Depends(get_db)):
+    """获取矛盾检测摘要"""
+    engine = ContradictionEngine(kb)
+    cached = engine.get_cached()
+    if not cached:
+        result = engine.scan_all()
+        summary = result.summary
+    else:
+        summary = cached.summary
+
+    return ok(data={
+        "total": summary.total,
+        "by_severity": summary.by_severity,
+        "by_issue_type": summary.by_issue_type,
+        "by_contradiction_type": summary.by_contradiction_type,
+        "open_count": summary.open_count,
+        "dismissed_count": summary.dismissed_count,
+        "duration_ms": summary.duration_ms,
+    })
+
+
+# ── 矛盾检测审查管理 ──────────────────────────
+
+from pydantic import BaseModel as _ReviewBase
+
+
+class _ReviewAction(_ReviewBase):
+    """审查操作请求"""
+    reason: str = ""
+    note: str = ""
+
+
+@router.post("/contradictions/{fingerprint}/dismiss")
+def dismiss_contradiction(
+    fingerprint: str,
+    body: _ReviewAction,
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """忽略一条检测结果"""
+    engine = ContradictionEngine(kb)
+    cached = engine.get_cached()
+    if not cached:
+        cached = engine.scan_all()
+    target = next((r for r in cached.results if r.fingerprint == fingerprint), None)
+    if not target:
+        return err("fingerprint 不存在", status_code=404)
+    kb.save_review(
+        fingerprint=fingerprint,
+        rule_name=target.rule_name,
+        rule_version=target.rule_version,
+        type_str=target.contradiction_type.value,
+        kind=target.kind.value,
+        severity=target.severity.value,
+        status="dismissed",
+        reason=body.reason,
+    )
+    return ok(data={"fingerprint": fingerprint, "status": "dismissed"})
+
+
+@router.post("/contradictions/{fingerprint}/confirm")
+def confirm_contradiction(
+    fingerprint: str,
+    body: _ReviewAction,
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """确认一条检测结果"""
+    engine = ContradictionEngine(kb)
+    cached = engine.get_cached()
+    if not cached:
+        cached = engine.scan_all()
+    target = next((r for r in cached.results if r.fingerprint == fingerprint), None)
+    if not target:
+        return err("fingerprint 不存在", status_code=404)
+    kb.save_review(
+        fingerprint=fingerprint,
+        rule_name=target.rule_name,
+        rule_version=target.rule_version,
+        type_str=target.contradiction_type.value,
+        kind=target.kind.value,
+        severity=target.severity.value,
+        status="confirmed",
+        reason=body.reason,
+    )
+    return ok(data={"fingerprint": fingerprint, "status": "confirmed"})
+
+
+@router.delete("/contradictions/{fingerprint}/review")
+def reset_contradiction_review(
+    fingerprint: str,
+    kb: KnowledgeBase = Depends(get_db),
+):
+    """取消审查状态（重置为 open）"""
+    existing = kb.get_review(fingerprint)
+    if not existing:
+        return err("该结果尚未被审查", status_code=404)
+    kb.save_review(
+        fingerprint=fingerprint,
+        rule_name=existing["rule_name"],
+        rule_version=existing.get("rule_version", ""),
+        type_str=existing["type"],
+        kind=existing["kind"],
+        severity=existing["severity"],
+        status="open",
+        reason="",
+    )
+    return ok(data={"fingerprint": fingerprint, "status": "open"})
 

@@ -163,6 +163,14 @@ class KnowledgeBase:
             row = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()
         return row[0]
 
+    def get_max_parsed_chapter(self) -> int:
+        """获取已解析的最大章序号"""
+        conn = self.get_conn()
+        row = conn.execute(
+            "SELECT MAX(num) FROM chapters WHERE status = 'parsed'"
+        ).fetchone()
+        return row[0] if row and row[0] else 0
+
     def list_characters(
         self,
         name: str | None = None,
@@ -356,6 +364,24 @@ class KnowledgeBase:
             );
             CREATE INDEX IF NOT EXISTS idx_parse_logs_chapter ON llm_parse_logs(chapter_id);
             CREATE INDEX IF NOT EXISTS idx_parse_logs_status ON llm_parse_logs(parse_status);
+
+            -- contradiction_reviews：矛盾检测结果审查记录
+            CREATE TABLE IF NOT EXISTS contradiction_reviews (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                fingerprint     TEXT UNIQUE NOT NULL,
+                rule_name       TEXT NOT NULL,
+                rule_version    TEXT DEFAULT '',
+                type            TEXT NOT NULL DEFAULT '',
+                kind            TEXT NOT NULL DEFAULT '',
+                severity        TEXT NOT NULL DEFAULT '',
+                status          TEXT NOT NULL DEFAULT 'open',
+                reason          TEXT DEFAULT '',
+                evidence_hash   TEXT DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_reviews_fingerprint ON contradiction_reviews(fingerprint);
+            CREATE INDEX IF NOT EXISTS idx_reviews_status ON contradiction_reviews(status);
         """)
 
         # ── Schema 迁移：为旧表补充缺失的列 ────────────
@@ -376,6 +402,8 @@ class KnowledgeBase:
             # Phase 2：foreshadowings 增加 evidence 和置信度标签
             "ALTER TABLE foreshadowings ADD COLUMN evidence TEXT DEFAULT ''",
             "ALTER TABLE foreshadowings ADD COLUMN confidence_label TEXT DEFAULT 'medium'",
+            # Phase 4 P3：contradiction_reviews 增加规则版本号
+            "ALTER TABLE contradiction_reviews ADD COLUMN rule_version TEXT DEFAULT ''",
         ]
 
         for sql in migrations:
@@ -596,4 +624,59 @@ class KnowledgeBase:
             conn.rollback()
             logger.error("第 %s 章事务写入失败，已回滚: %s", chapter_num, e)
             raise
+
+    # ── 矛盾检测审查 ─────────────────────────────
+
+    def save_review(
+        self,
+        fingerprint: str,
+        rule_name: str,
+        type_str: str,
+        kind: str,
+        severity: str,
+        status: str,
+        rule_version: str = "",
+        reason: str = "",
+        evidence_hash: str = "",
+    ) -> None:
+        """保存或更新一条审查记录"""
+        conn = self.get_conn()
+        conn.execute(
+            """INSERT INTO contradiction_reviews
+               (fingerprint, rule_name, rule_version, type, kind, severity, status, reason, evidence_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(fingerprint) DO UPDATE SET
+                   status = excluded.status,
+                   reason = excluded.reason,
+                   evidence_hash = excluded.evidence_hash,
+                   updated_at = CURRENT_TIMESTAMP""",
+            (fingerprint, rule_name, rule_version, type_str, kind, severity,
+             status, reason, evidence_hash),
+        )
+        conn.commit()
+
+    def get_review(self, fingerprint: str) -> Optional[dict]:
+        """按 fingerprint 查询审查记录"""
+        conn = self.get_conn()
+        row = conn.execute(
+            "SELECT * FROM contradiction_reviews WHERE fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_all_reviews(self) -> list[dict]:
+        """获取所有审查记录"""
+        conn = self.get_conn()
+        rows = conn.execute(
+            "SELECT * FROM contradiction_reviews ORDER BY updated_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_dismissed_fingerprints(self) -> set[str]:
+        """获取所有被 dismissed/confirmed 的 fingerprint 集合（供 engine 过滤）"""
+        conn = self.get_conn()
+        rows = conn.execute(
+            "SELECT fingerprint FROM contradiction_reviews WHERE status IN ('dismissed', 'confirmed')"
+        ).fetchall()
+        return {r["fingerprint"] for r in rows}
 
