@@ -29,6 +29,7 @@ from core.knowledge import KnowledgeBase
 from api.deps import get_db
 import json
 
+
 router = APIRouter(prefix="/api")
 
 
@@ -108,9 +109,16 @@ def get_chapter(num: int, kb: KnowledgeBase = Depends(get_db)):
 @router.get("/characters", response_model=CharacterListResponse)
 def list_characters(
     name: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("first_appeared"),
+    sort_order: str = Query("asc"),
     kb: KnowledgeBase = Depends(get_db),
 ):
-    characters = kb.list_characters(name=name)
+    characters, total = kb.list_characters(
+        name=name, page=page, page_size=page_size,
+        sort_by=sort_by, sort_order=sort_order,
+    )
     items = [
         CharacterListItem(
             name=c["name"],
@@ -122,7 +130,7 @@ def list_characters(
         )
         for c in characters
     ]
-    return ok(data=CharacterListResponse(items=items, total=len(items)))
+    return ok(data=CharacterListResponse(items=items, total=total))
 
 @router.get("/characters/{name}", response_model=CharacterResponse)
 def get_character(name: str, kb: KnowledgeBase = Depends(get_db)):
@@ -143,9 +151,17 @@ def get_character(name: str, kb: KnowledgeBase = Depends(get_db)):
 def list_relations(
     char_a: str | None = Query(None),
     char_b: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("chapter"),
+    sort_order: str = Query("asc"),
     kb: KnowledgeBase = Depends(get_db),
 ):
-    relations = kb.list_relations(char_a=char_a, char_b=char_b)
+    relations, total = kb.list_relations(
+        char_a=char_a, char_b=char_b,
+        page=page, page_size=page_size,
+        sort_by=sort_by, sort_order=sort_order,
+    )
     items = [
         RelationResponse(
             char_a=r["char_a"], char_b=r["char_b"],
@@ -154,14 +170,22 @@ def list_relations(
         )
         for r in relations
     ]
-    return ok(data=RelationListResponse(items=items, total=len(items)))
+    return ok(data=RelationListResponse(items=items, total=total))
 
 @router.get("/timeline", response_model=TimelineListResponse)
 def list_timeline(
     chapter: int | None = Query(None, ge=1),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("narrative_order"),
+    sort_order: str = Query("asc"),
     kb: KnowledgeBase = Depends(get_db),
 ):
-    events = kb.list_timeline(chapter=chapter)
+    events,total = kb.list_timeline(
+        chapter=chapter,
+        page=page, page_size=page_size,
+        sort_by=sort_by, sort_order=sort_order,
+    )
     items = [
         TimelineResponse(
             chapter=e["chapter"], 
@@ -175,16 +199,23 @@ def list_timeline(
         )
         for e in events
     ]
-    return ok(data=TimelineListResponse(items=items, total=len(items)))
+    return ok(data=TimelineListResponse(items=items, total=total))
 
 @router.get("/foreshadowings", response_model=ForeshadowingListResponse)
 def list_foreshadowings(
     status: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("laid_chapter"),
+    sort_order: str = Query("asc"),
     kb: KnowledgeBase = Depends(get_db),
 ):
-    items = kb.list_foreshadowings(status=status)
-    total = len(items)
-    recovered = sum(1 for f in items if f.get("status") == "recovered")
+    items_list, total = kb.list_foreshadowings(
+        status=status,
+        page=page, page_size=page_size,
+        sort_by=sort_by, sort_order=sort_order,
+    )
+    recovered = sum(1 for f in items_list if f.get("status") == "recovered")
     unrecovered = total - recovered
     foreshadowings = [
         ForeshadowingResponse(
@@ -197,7 +228,7 @@ def list_foreshadowings(
             confidence=f.get("confidence", 1.0),
             confidence_label=f.get("confidence_label", "medium"),
         )
-        for f in items
+        for f in items_list
     ]
     return ok(data=ForeshadowingListResponse(
         items=foreshadowings, total=total,
@@ -243,4 +274,72 @@ def query_question(
         answer=result.get("answer", ""),
         source=result.get("source", "unknown"),
     ))
+
+
+# ── WebSocket ──────────────────────────────────
+
+
+from fastapi import WebSocket, WebSocketDisconnect
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    """WebSocket 实时推送——接收解析状态变更通知"""
+    manager = ws.app.state.ws_manager
+    await manager.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
+
+
+# ── 手动触发解析 ──────────────────────────────
+
+
+import logging
+logger_routes = logging.getLogger(__name__)
+
+
+@router.post("/reparse/{num}")
+async def reparse_chapter(num: int, kb: KnowledgeBase = Depends(get_db)):
+    """手动触发某章的 LLM 解析，完成后广播 WebSocket"""
+    from core.parser import ChapterParser
+    from config import load_config
+    from pathlib import Path
+
+    chapter = kb.get_chapter(num)
+    if not chapter:
+        return err("章节不存在", status_code=404)
+
+    if not chapter.get("raw_text"):
+        return err(f"第{num}章没有正文（raw_text 为空），无法解析", status_code=400)
+
+    settings = load_config(Path("agent_data") / "config.json")
+    parser = ChapterParser(settings, kb)
+
+    # 注入广播器
+    manager = ws.app.state.ws_manager
+
+    def broadcaster(result: dict):
+        manager.broadcast({
+            "type": "chapter_parsed",
+            "data": {
+                "num": result["chapter_num"],
+                "status": "ok" if result["ok"] else "error",
+                "error": result.get("error"),
+            },
+        })
+
+    parser.broadcaster = broadcaster
+    result = parser.parse_and_store(
+        chapter_text=chapter["raw_text"],
+        chapter_num=num,
+        filename=chapter.get("filename", f"第{num}章.md"),
+    )
+
+    if not result["ok"]:
+        return err(f"解析失败：{result.get('error', '未知错误')}", status_code=500)
+
+    return ok(data={"num": num, "status": "parsed"})
 

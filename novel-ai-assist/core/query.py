@@ -367,8 +367,8 @@ class QueryEngine:
                         f"角色 {name}：{char.get('description', '')} "
                         f"（最后出场第{char['last_seen']}章）"
                     )
-                    relations = self.kb.list_relations(char_a=name)
-                    relations += self.kb.list_relations(char_b=name)
+                    relations = self.kb.list_relations(char_a=name)[0]
+                    relations.extend(self.kb.list_relations(char_b=name)[0])
                     if relations:
                         rel_str = "；".join(
                             f"{r['char_a']}和{r['char_b']}是{r['relation']}"
@@ -521,9 +521,9 @@ def _query_relation_between(kb: KnowledgeBase, sq: dict) -> dict:
     if len(entities) < 2:
         return {"found": False}
     a, b = entities[0], entities[1]
-    relations = kb.list_relations(char_a=a, char_b=b)
+    relations, _ = kb.list_relations(char_a=a, char_b=b)
     if not relations:
-        relations = kb.list_relations(char_a=b, char_b=a)
+        relations, _ = kb.list_relations(char_a=b, char_b=a)
     if not relations:
         return {"found": False}
     lines = [f"{r['char_a']} 和 {r['char_b']} 是{r['relation']}关系"
@@ -541,8 +541,9 @@ def _query_relation_all(kb: KnowledgeBase, sq: dict) -> dict:
     if not entities:
         return {"found": False}
     name = entities[0]
-    relations = kb.list_relations(char_a=name)
-    relations += kb.list_relations(char_b=name)
+    relations_a, _ = kb.list_relations(char_a=name)
+    relations_b, _ = kb.list_relations(char_b=name)
+    relations = relations_a + relations_b
     if not relations:
         return {"found": False}
     lines = [f"{r['char_a']} 和 {r['char_b']} 是{r['relation']}关系"
@@ -552,6 +553,7 @@ def _query_relation_all(kb: KnowledgeBase, sq: dict) -> dict:
         "source": "sql",
         "answer": f"{name}的关系：{'；'.join(lines)}",
     }
+
 
 
 def _query_chapter_summary(kb: KnowledgeBase, sq: dict) -> dict:
@@ -585,7 +587,7 @@ def _query_chapter_list(kb: KnowledgeBase, sq: dict) -> dict:
 
 def _query_foreshadowing(kb: KnowledgeBase, sq: dict) -> dict:
     """查伏笔"""
-    items = kb.list_foreshadowings()
+    items, _ = kb.list_foreshadowings()
     if not items:
         return {"found": False}
     unrecovered = [f for f in items if f.get("status") == "unrecovered"]
@@ -602,7 +604,7 @@ def _query_foreshadowing(kb: KnowledgeBase, sq: dict) -> dict:
 def _query_timeline(kb: KnowledgeBase, sq: dict) -> dict:
     """查时间线"""
     m = re.search(r'(\d+)', sq.get("original", ""))
-    events = kb.list_timeline(chapter=int(m.group(1)) if m else None)
+    events, _ = kb.list_timeline(chapter=int(m.group(1)) if m else None)
     if not events:
         return {"found": False}
     lines = [f"{e.get('story_time', '')} {e['event']}" for e in events[:8]]

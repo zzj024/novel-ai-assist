@@ -1,5 +1,49 @@
 # 开发日志
 
+## 2026-06-25 — Phase 3 全部完成（Step 3/5 + CORS + skill 三件套）
+
+### 完成
+
+- **Phase 3 Step 3：REST 端点分页/排序增强**
+  - `core/knowledge.py` — 通用 `_paginated_query()` 方法 + 4 个列表方法改为 `tuple[list, int]` 返回
+  - `api/routes.py` — 4 个端点新增 `page/size/sort_by/sort_order` 参数
+  - 排序白名单安全校验，非法字段自动降级
+  - `tests/test_pagination.py` — 14 个分页排序测试
+
+- **Phase 3 Step 5：WebSocket + 重解析端点**
+  - `api/ws_manager.py` — ConnectionManager 连接池 + sync→async 桥接
+  - `POST /api/reparse/{num}` — 手动触发 LLM 解析 + 解析完成广播
+  - `GET /api/ws` — WebSocket 长连接入口
+  - `core/parser.py` — 注入 broadcaster，解析成功后自动推送
+
+- **CORS 配置补丁**
+  - `config.py` — Settings 新增 `cors_origins` 字段
+  - `main.py` — 注册 CORSMiddleware
+
+- **Skill 体系完善（4 个）**
+  - `project-sync.md` — 项目双向同步（进场定向 + 离场同步）
+  - `teaching.md` — 通用教学型结对编程（语言无关 + 企业级模式）
+  - `gpt-context-builder.md` — 项目上下文打包器（供外部 LLM 决策）
+  - `enterprise-planner.md` — 企业级全流程规划（架构→阶段→实施→GitHub）
+
+- **CLAUDE.md 创建** — 项目级 Claude 操作指南
+
+### 关键决策
+
+| 决策 | 方案 | 理由 |
+|------|------|------|
+| 分页排序 | 通用 `_paginated_query()` 工具方法 | 4 个列表模式相同，抽一次更安全 |
+| WebSocket 广播 | ConnectionManager + sync→async 桥接 | parser 跑在 sync 线程，需桥接到 asyncio |
+| 权限控制 | 一次对话授权制 | 教学模式下防止意外操作文件 |
+
+### 待办
+
+- Phase 4：矛盾检测（10 条规则，4 大类）
+- P0：小模型职责过载完善
+- P1：扩意图类型（event/organization/recent/causality）
+
+---
+
 ## 2026-06-25 — Phase 3 Step 4 query 引擎 + GPT 架构 Review
 
 ### 完成

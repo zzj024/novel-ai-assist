@@ -99,6 +99,58 @@ class KnowledgeBase:
             self.local.conn = conn
         return self.local.conn
 
+    def _paginated_query(
+                self,
+                table: str,
+                where_clause: str,
+                params: list,
+                sort_by: str,
+                sort_order: str,
+                page: int,
+                page_size: int,
+                allowed_sorts: list[str],
+        ) -> tuple[list[dict], int]:
+            """通用分页排序查询
+            参数：
+                table:         表名
+                where_clause:  WHERE 子句（无筛选时传 "1=1"）
+                params:        WHERE 参数列表
+                sort_by:       排序字段（不在白名单则降级为allowed_sorts[0]）
+                sort_order:    排序方向（"asc" 或 "desc"）
+                page:          页码（从 1 开始）
+                page_size:     每页条数
+                allowed_sorts: 排序字段白名单
+    
+            返回：
+                (list[dict], total_count)
+              """
+    
+            conn = self.get_conn()
+    
+            # 安全校验：排序字段必须在白名单内
+            if sort_by not in allowed_sorts:
+                sort_by = allowed_sorts[0]
+    
+            # 安全校验：排序方向只允许asc / desc
+            if sort_order not in ("asc", "desc"):
+                sort_order = "asc"
+    
+            # 计数查询
+            count_row = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {where_clause}",
+                params,
+            ).fetchone()[0]
+    
+            # 分页数据查询
+            offset = (page - 1) * page_size
+            order_sql = f"{sort_by} {sort_order}"
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE {where_clause} ORDER BY {order_sql} LIMIT ? OFFSET ?",
+                [*params, page_size, offset],
+            ).fetchall()
+
+            return [dict(r) for r in rows], count_row
+    
     def count_chapters(self, status: str | None = None) -> int:
         """统计章节总数
         参数：status: 按状态筛选（None=全部，'parsed'=已解析等）
@@ -111,24 +163,42 @@ class KnowledgeBase:
             row = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()
         return row[0]
 
-    def list_characters(self, name: str | None = None) -> list[dict]:
-        """角色列表，支持按名模糊搜索"""
-        conn = self.get_conn()
+    def list_characters(
+        self,
+        name: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "first_appeared",
+        sort_order: str = "asc",
+    ) -> tuple[list[dict], int]:
+        """
+        角色列表，支持模糊搜索 + 分页排序
+        返回 (数据列表, 总数)
+        """
+        allowed_sorts = ["name", "first_appeared", "last_seen"]
         if name:
-            rows = conn.execute(
-                "SELECT * FROM characters WHERE name LIKE ? ORDER BY first_appeared",
-                (f"%{name}%",),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM characters ORDER BY first_appeared"
-            ).fetchall()
-        return [dict(r) for r in rows]
+            return self._paginated_query(
+                "characters", "name LIKE ?", [f"%{name}%"],
+                sort_by, sort_order, page, page_size, allowed_sorts,
+            )
+        return self._paginated_query(
+            "characters", "1=1", [],
+            sort_by, sort_order, page, page_size, allowed_sorts,
+        )
 
-    def list_relations(self, char_a: str | None = None,
-                       char_b: str | None = None) -> list[dict]:
-        """人物关系列表，支持按角色筛选"""
-        conn = self.get_conn()
+    def list_relations(
+        self,
+        char_a: str | None = None,
+        char_b: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "chapter",
+        sort_order: str = "asc",
+    ) -> tuple[list[dict], int]:
+        """
+        人物关系列表，支持双端筛选 + 分页排序
+        返回 (数据列表, 总数)
+        """
         conditions: list[str] = []
         params: list[str] = []
         if char_a:
@@ -137,41 +207,59 @@ class KnowledgeBase:
         if char_b:
             conditions.append("char_b = ?")
             params.append(char_b)
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-        rows = conn.execute(
-            f"SELECT * FROM relations {where} ORDER BY chapter",
-            params,
-        ).fetchall()
-        return [dict(r) for r in rows]
+        where = " AND ".join(conditions) if conditions else "1=1"
+        allowed_sorts = ["char_a", "char_b", "relation","chapter"]
+        return self._paginated_query(
+            "relations", where, params,
+            sort_by, sort_order, page, page_size, allowed_sorts,
+        )
 
-    def list_timeline(self, chapter: int | None = None) -> list[dict]:
-        """时间线事件列表，支持按章节筛选"""
-        conn = self.get_conn()
-        if chapter:
-            rows = conn.execute(
-                "SELECT * FROM timeline_events WHERE chapter = ? ORDER BY narrative_order",
-                (chapter,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM timeline_events ORDER BY chapter, narrative_order"
-            ).fetchall()
-        return [dict(r) for r in rows]
+    def list_timeline(
+        self,
+        chapter: int | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "narrative_order",
+        sort_order: str = "asc",
+    ) -> tuple[list[dict], int]:
+        """
+        时间线事件列表，支持按章节筛选 + 分页排序
+        返回 (数据列表, 总数)
+        """
+        allowed_sorts = ["chapter", "story_time","narrative_order"]
+        if chapter is not None:
+            return self._paginated_query(
+                "timeline_events", "chapter = ?", [chapter],
+                sort_by, sort_order, page, page_size,allowed_sorts,
+            )
+        return self._paginated_query(
+            "timeline_events", "1=1", [],
+            sort_by, sort_order, page, page_size, allowed_sorts,
+        )
 
-    def list_foreshadowings(self, status: str | None = None) -> list[dict]:
-        """伏笔列表，支持按状态筛选"""
-        conn = self.get_conn()
+    def list_foreshadowings(
+        self,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        sort_by: str = "laid_chapter",
+        sort_order: str = "asc",
+    ) -> tuple[list[dict], int]:
+        """
+        伏笔列表，支持按状态筛选 + 分页排序
+        返回 (数据列表, 总数)
+        """
+        allowed_sorts = ["laid_chapter", "status", "confidence"]
         if status:
-            rows = conn.execute(
-                "SELECT * FROM foreshadowings WHERE status = ? ORDER BY laid_chapter",
-                (status,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM foreshadowings ORDER BY laid_chapter"
-            ).fetchall()
-        return [dict(r) for r in rows]
-
+            return self._paginated_query(
+                "foreshadowings", "status = ?", [status],
+                sort_by, sort_order, page, page_size,allowed_sorts,
+            )
+        return self._paginated_query(
+            "foreshadowings", "1=1", [],
+            sort_by, sort_order, page, page_size, allowed_sorts,
+        )
+        
     # ── 建表 + Schema 迁移 ────────────────────────────
 
     def init_db(self) -> None:

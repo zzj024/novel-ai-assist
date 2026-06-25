@@ -24,6 +24,7 @@ class Settings(BaseModel):
     auto_scan_interval: int = 3600
     query_cheap_base: str = "http://localhost:11434/v1"
     query_cheap_model: str = "qwen2.5:7b"
+    cors_origins: str = "*"
 
     @property
     def masked_api_key(self) -> str:
@@ -39,6 +40,7 @@ DEFAULT_CONFIG = {
     "auto_scan_interval": 3600,
     "query_cheap_base": "http://localhost:11434/v1",
     "query_cheap_model": "qwen2.5:7b",
+    "cors_origins": "*",
 }
 
 def save_config(settings: Settings, config_path: Path) -> None:

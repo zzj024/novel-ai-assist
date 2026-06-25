@@ -1,10 +1,12 @@
 """应用入口：FastAPI 创建 + 生命周期管理"""
 import threading
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from config import load_config
 from core.knowledge import KnowledgeBase
 from watcher.monitor import scan_chapters
@@ -51,6 +53,13 @@ async def lifespan(app: FastAPI):
         t.start()
         logger.info("定时扫描已启动，间隔 %d 秒", settings.auto_scan_interval)
 
+    # 6. 初始化 WebSocket 连接管理器
+    from api.ws_manager import ConnectionManager
+    ws_manager = ConnectionManager()
+    ws_manager.set_loop(asyncio.get_event_loop())
+    app.state.ws_manager = ws_manager
+    logger.info("WebSocket 管理器已初始化")
+
     yield  # ← 从这里开始是关闭逻辑
 
     # 关闭时：停止定时扫描
@@ -71,6 +80,15 @@ def create_app(base_dir: Path = Path(".")) -> FastAPI:
     app.state.knowledge_base = None
     app.state.scan_timer = None
     app.state.stop_event = threading.Event()
+
+    # 注册 CORS 中间件
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     app.include_router(router)
 

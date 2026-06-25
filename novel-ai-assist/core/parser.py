@@ -39,6 +39,7 @@ class ChapterParser:
             api_key=config.api_key,
             base_url=config.api_base,
         )
+        self.broadcaster = None
 
     # ── LLM 调用 ──────────────────────────────────────
 
@@ -192,6 +193,11 @@ class ChapterParser:
             )
 
             logger.info("第 %s 章解析成功", chapter_num)
+
+            # WebSocket 广播
+            if self.broadcaster:
+                self.broadcaster({"ok": True, "chapter_num": chapter_num, "error": None})
+
             return {"ok": True, "chapter_num": chapter_num, "error": None}
 
         except Exception as e:
